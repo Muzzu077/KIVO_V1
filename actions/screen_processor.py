@@ -15,11 +15,15 @@ from pathlib import Path
 
 import numpy as np
 
-try:
-    import cv2
-    _CV2 = True
-except ImportError:
-    _CV2 = False
+from core.lazyimport import LazyModule, installed
+
+# OpenCV is 224 ms and is only ever touched by the webcam path — see
+# core/lazyimport.py. Screen capture, which is what this action does on almost
+# every call, never reaches it. numpy above stays eager: main.py already
+# imports it for audio, so it is in memory before this file is read.
+_CV2 = installed("cv2")
+
+cv2 = LazyModule("cv2")
 
 try:
     import mss
@@ -99,13 +103,13 @@ def _capture_screen() -> tuple[bytes, str]:
     # Wayland / Linux: prefer grim if available (mss produces black screen on niri/Wayland)
     import shutil
     import subprocess
-    if shutil.which("grim") and (os_env := sys.platform.startswith("linux")):
+    if shutil.which("grim") and sys.platform.startswith("linux"):
         try:
-            r = subprocess.run(["grim", "-"], capture_output=True, timeout=4.0)
+            r = subprocess.run(["grim", "-t", "png", "-"], capture_output=True, timeout=3)
             if r.returncode == 0 and r.stdout:
                 return _compress(r.stdout, "PNG")
-        except Exception as e:
-            print(f"[Vision] grim capture failed: {e}")
+        except Exception:
+            pass
 
     if not _MSS:
         raise RuntimeError("mss is not installed. Run: pip install mss")
@@ -132,42 +136,40 @@ def _cv2_backend() -> int:
 
 
 def _probe_camera(index: int, backend: int, warmup: int = 5) -> bool:
-
     if not _CV2:
         return False
     cap = cv2.VideoCapture(index, backend)
     if not cap.isOpened():
         cap.release()
         return False
+
+    success = False
     for _ in range(warmup):
-        cap.read()
-    ret, frame = cap.read()
+        ret, frame = cap.read()
+        if ret and frame is not None and frame.size > 0:
+            success = True
+            break
+
     cap.release()
-    if not ret or frame is None:
-        return False
-    return bool(np.mean(frame) > 8)
+    return success
 
 
-def _detect_camera_index() -> int:
-
+def _detect_camera_index(max_indices: int = 4) -> int:
     backend = _cv2_backend()
-    print("[Vision] 🔍 Auto-detecting camera...")
-    for idx in range(6):
+    for idx in range(max_indices):
         if _probe_camera(idx, backend):
-            print(f"[Vision] ✅ Camera found at index {idx}")
             _save_config_key("camera_index", idx)
             return idx
-        print(f"[Vision] ⚠️  Camera index {idx}: no usable frame")
-
-    print("[Vision] ⚠️  No camera found — defaulting to index 0")
-    _save_config_key("camera_index", 0)
     return 0
 
 
 def _get_camera_index() -> int:
     cfg = _load_config()
     if "camera_index" in cfg:
-        return int(cfg["camera_index"])
+        try:
+            return int(cfg["camera_index"])
+        except (ValueError, TypeError):
+            pass
     return _detect_camera_index()
 
 

@@ -53,7 +53,7 @@ from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QGraphicsScene, QGraphicsView,
-    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
+    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar, QSlider,
 )
 
 try:
@@ -82,7 +82,7 @@ def _read_full_config() -> dict:
 
 # Single source of truth for the release name — the window title, the header
 # badge and the readme must never disagree again.
-APP_VERSION  = "MARK LV"
+APP_VERSION  = "MARK LVI"
 APP_PROTOCOL = APP_VERSION.split()[-1]
 
 _DEFAULT_W, _DEFAULT_H = 980, 700
@@ -2223,6 +2223,23 @@ class AudioDeviceOverlay(_HudOverlay):
     webcam'."""
 
     picked = pyqtSignal()      # emitted after Apply, when something changed
+
+    # THESE EXIST BECAUSE QTimer.singleShot FROM A WORKER THREAD NEVER FIRES.
+    #
+    # The first version posted results back with `QTimer.singleShot(0, fn)` from
+    # inside the audio thread. A QTimer belongs to the thread that creates it,
+    # and that thread has no event loop — so the timer was created, never ran,
+    # and the panel sat on "Speak now…" for ever while the recording finished
+    # silently behind it. Reported as "I saw no sign of anything at all", which
+    # is precisely what it looked like.
+    #
+    # A signal is the thread-safe way across: Qt queues it onto the receiving
+    # object's thread, which for a widget is the GUI thread. Both carry only
+    # plain values — never a widget — because the widgets belong to the GUI
+    # thread and the worker must not touch them even to pass them along.
+    _level_seen = pyqtSignal(int)          # 0-100, while recording
+    _test_result = pyqtSignal(str, bool)   # sentence, was it good
+
     _OW = 460
 
     def __init__(self, parent=None):
@@ -2261,6 +2278,13 @@ class AudioDeviceOverlay(_HudOverlay):
             f"selection-background-color: {C.PRI_GHO}; border: 1px solid {C.BORDER}; }}"
         )
 
+        _test_css = (
+            f"QPushButton {{ background: transparent; color: {C.TEXT_DIM}; "
+            f"border: 1px solid {C.BORDER}; border-radius: 3px; }}"
+            f"QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}"
+            f"QPushButton:disabled {{ color: {C.BORDER}; }}"
+        )
+
         def _row(label: str, kind: str, current: str) -> QComboBox:
             cap = QLabel(label)
             cap.setFont(QFont("Courier New", 8))
@@ -2284,14 +2308,122 @@ class AudioDeviceOverlay(_HudOverlay):
                 # silently resetting the user's choice to default.
                 box.addItem(f"{current}  (not connected)", current)
                 box.setCurrentIndex(box.count() - 1)
-            lay.addWidget(box)
+
+            # THE ONE CHECK THE STARTUP PROBE CANNOT MAKE.
+            #
+            # core/audio_devices decides at launch whether a device opens and
+            # whether it moves audio, and it does that with silence. A muted
+            # microphone, a level slider at zero and a privacy shutter all pass
+            # every one of those tests and still deliver a flat line — the only
+            # thing that separates them from a working microphone is a person
+            # speaking into it.
+            #
+            # So the button is here, beside the dropdown, in the panel somebody
+            # opens when JARVIS cannot hear them. It replaces a loose
+            # `ses_testi.py` in the project root that nobody would ever find.
+            btn_row = QHBoxLayout(); btn_row.setSpacing(6)
+            btn_row.addWidget(box, 1)
+            test = QPushButton("TEST")
+            test.setFixedSize(64, 30)
+            test.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            test.setCursor(Qt.CursorShape.PointingHandCursor)
+            test.setStyleSheet(_test_css)
+            btn_row.addWidget(test)
+            lay.addLayout(btn_row)
+
+            # A meter, because a static label is indistinguishable from a hang.
+            # Three seconds of "Speak now" with nothing moving was reported as
+            # "I saw no sign of anything" — correctly, since nothing on screen
+            # responded to the user's voice.
+            meter = QProgressBar()
+            meter.setRange(0, 100)
+            meter.setValue(0)
+            meter.setTextVisible(False)
+            meter.setFixedHeight(6)
+            meter.setStyleSheet(
+                f"QProgressBar {{ background: #000d12; border: 1px solid {C.BORDER}; "
+                f"border-radius: 3px; }}"
+                f"QProgressBar::chunk {{ background: {C.PRI}; border-radius: 2px; }}")
+            meter.hide()
+            lay.addWidget(meter)
+
+            result = QLabel("")
+            result.setWordWrap(True)
+            result.setFont(QFont("Courier New", 7))
+            result.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+            lay.addWidget(result)
+
+            test.clicked.connect(
+                lambda _=False, k=kind, b=box, t=test, r=result, m=meter:
+                    self._run_test(k, b, t, r, m))
             return box
+
+        # Which row is being tested right now. One at a time — the button is
+        # disabled for the duration — so a single slot is enough, and it keeps
+        # widgets off the signal payload.
+        self._active = None                # (button, label, meter)
+        self._level_seen.connect(self._on_level)
+        self._test_result.connect(self._on_result)
 
         self._in_box  = _row("MICROPHONE — what JARVIS hears you with",
                              "input", get_input_device())
         lay.addSpacing(4)
         self._out_box = _row("SPEAKERS — what JARVIS talks through",
                              "output", get_output_device())
+
+        # ── Output volume, beside the output device ──────────────────────────
+        #
+        # Choosing "Realtek(R) Audio" here and finding it far too quiet used to
+        # mean leaving this panel, opening the system sound settings, finding
+        # the same endpoint again and moving a slider there. The volume belongs
+        # next to the device it applies to.
+        _vol_now = None
+        try:
+            from core.audio_devices import get_output_volume
+            # The SELECTED output, not the system default. Somebody puts the
+            # assistant on their speakers and keeps everything else in their
+            # headphones; a slider labelled with one device that moves the
+            # other is worse than no slider at all.
+            _vol_now = get_output_volume(self._out_box.currentData() or "")
+        except Exception:
+            pass
+
+        if _vol_now is not None:
+            vcap = QLabel("OUTPUT VOLUME")
+            vcap.setFont(QFont("Courier New", 8))
+            vcap.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+            lay.addSpacing(4)
+            lay.addWidget(vcap)
+
+            vrow = QHBoxLayout(); vrow.setSpacing(8)
+            self._vol = QSlider(Qt.Orientation.Horizontal)
+            self._vol.setRange(0, 100)
+            self._vol.setValue(int(_vol_now))
+            self._vol.setFixedHeight(22)
+            self._vol.setStyleSheet(
+                f"QSlider::groove:horizontal {{ background: #000d12; height: 4px; "
+                f"border: 1px solid {C.BORDER}; border-radius: 2px; }}"
+                f"QSlider::sub-page:horizontal {{ background: {C.PRI_DIM}; "
+                f"border-radius: 2px; }}"
+                f"QSlider::handle:horizontal {{ background: {C.PRI}; width: 10px; "
+                f"margin: -5px 0; border-radius: 5px; }}")
+            self._vol_lbl = QLabel(f"{int(_vol_now)}%")
+            self._vol_lbl.setFont(QFont("Courier New", 8))
+            self._vol_lbl.setFixedWidth(40)
+            self._vol_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+            vrow.addWidget(self._vol, 1)
+            vrow.addWidget(self._vol_lbl)
+            lay.addLayout(vrow)
+
+            # valueChanged fires for every pixel of a drag, and each one is a
+            # COM call into the audio endpoint. sliderReleased fires once, when
+            # the user has decided — the label still follows the handle so the
+            # number moves while they drag.
+            self._vol.valueChanged.connect(
+                lambda v: self._vol_lbl.setText(f"{v}%"))
+            self._vol.sliderReleased.connect(self._apply_volume)
+            self._out_box.currentIndexChanged.connect(
+                lambda _i: self._volume_follows_device())
 
         note = QLabel("Applying reconnects the session. Your conversation is kept.")
         note.setWordWrap(True)
@@ -2325,6 +2457,105 @@ class AudioDeviceOverlay(_HudOverlay):
         cancel.clicked.connect(self.hide)
         row.addWidget(cancel)
         lay.addLayout(row)
+
+    def _apply_volume(self):
+        """Set the system output volume from the slider, off the Qt thread.
+
+        The Windows path goes through COM, which can block for tens of
+        milliseconds; that is not long enough to see but is long enough to
+        stutter a drag, and there is no reason to make the interface wait for
+        it.
+        """
+        import threading
+        value = self._vol.value()
+        device = self._out_box.currentData() or ""
+
+        def _work():
+            from core import audio_devices
+            if not audio_devices.set_output_volume(value, device):
+                print(f"[Audio] the volume of '{device}' could not be set "
+                      f"to {value}%")
+
+        threading.Thread(target=_work, daemon=True, name="audio-volume").start()
+
+    def _volume_follows_device(self):
+        """Re-read the slider when the chosen output changes.
+
+        Each device keeps its own level, so leaving the handle where it was
+        would show the previous device's volume against the new device's name —
+        and the next drag would then jump it there.
+        """
+        if not hasattr(self, "_vol"):
+            return
+        try:
+            from core.audio_devices import get_output_volume
+            now = get_output_volume(self._out_box.currentData() or "")
+        except Exception:
+            now = None
+        if now is None:
+            return
+        self._vol.blockSignals(True)
+        self._vol.setValue(int(now))
+        self._vol.blockSignals(False)
+        self._vol_lbl.setText(f"{int(now)}%")
+
+    def _run_test(self, kind, box, button, label, meter=None):
+        """Record or play for real, off the Qt thread.
+
+        Both calls block for seconds — recording waits for the user to speak,
+        the tone waits for itself — and doing that on the Qt thread freezes the
+        HUD, which is the mistake Mark LV already paid for once with a 2.1
+        second wake-word import in the settings drawer.
+
+        Results come back by signal, not by timer. See the note on
+        `_level_seen` above for why that distinction is the whole feature.
+        """
+        import threading
+
+        name = box.currentData() or ""
+        self._active = (button, label, meter)
+        button.setEnabled(False)
+        label.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        label.setText("Speak now…" if kind == "input" else "Playing a tone…")
+        if meter is not None and kind == "input":
+            meter.setValue(0)
+            meter.show()
+
+        def _work():
+            from core import audio_devices
+            try:
+                if kind == "input":
+                    res = audio_devices.measure_input(
+                        name,
+                        on_level=lambda f: self._level_seen.emit(int(f * 100)))
+                    text = f"peak {res['peak']}  —  {res['verdict']}"
+                else:
+                    res = audio_devices.play_tone(name)
+                    text = res["verdict"]
+                good = bool(res.get("ok", False))
+            except Exception as e:
+                text, good = f"The test itself failed: {e}", False
+            self._test_result.emit(text, good)
+
+        threading.Thread(target=_work, daemon=True, name=f"audio-test-{kind}").start()
+
+    def _on_level(self, value: int):
+        """A live level, already on the GUI thread thanks to the signal."""
+        if self._active and self._active[2] is not None:
+            self._active[2].setValue(max(0, min(100, value)))
+
+    def _on_result(self, text: str, good: bool):
+        if not self._active:
+            return
+        button, label, meter = self._active
+        self._active = None
+        button.setEnabled(True)
+        if meter is not None:
+            meter.setValue(0)
+            meter.hide()
+        label.setStyleSheet(
+            f"color: {C.PRI if good else C.TEXT_DIM}; background: transparent;")
+        label.setText(text)
 
     def _apply(self):
         from memory.config_manager import (
@@ -2537,6 +2768,1035 @@ class MemoryOverlay(_HudOverlay):
         # Qt is entitled to touch the sender after a slot returns; tearing it
         # down mid-emission is how a widget ends up half-alive on screen.
         QTimer.singleShot(0, self._rebuild)
+
+
+class _ScrollSafeCombo(QComboBox):
+    """A dropdown that does not change when you scroll past it.
+
+    Qt's default is that a combo box under the pointer swallows the wheel and
+    steps its own value with it. Inside a scrolling panel that is not a
+    convenience, it is a trap: scrolling down the list of settings silently
+    changes whichever ones the pointer crossed on the way, and nothing on screen
+    says so. It was reported as "selections move around when I scroll", and it
+    is the same bug every Qt settings panel has until somebody fixes it.
+
+    The wheel is only accepted when the box has been clicked into. Otherwise the
+    event is passed up, which is what makes the panel scroll instead.
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        # StrongFocus so it can still be tabbed to and used from the keyboard;
+        # the wheel is gated on having focus, not on being focusable.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, e):
+        if self.hasFocus():
+            super().wheelEvent(e)
+        else:
+            e.ignore()
+
+
+class ProvidersOverlay(_HudOverlay):
+    """Choose what runs the assistant: Gemini Live, or your own stack.
+
+    WHAT THE FIRST VERSION GOT WRONG, AND WHY IT IS WORTH WRITING DOWN
+        It listed the PROVIDERS, and a provider here covers thirteen services at
+        once because they all speak the same protocol. That is the right shape
+        for the code — it is why `llm_openai.py` is one file instead of thirteen
+        — and it is the wrong shape for a person.
+
+        Watched in use: somebody who wanted to run a model on their own machine
+        opened the dropdown, saw a single entry reading "OpenAI-compatible", and
+        concluded the feature was not there. They were right to. Nobody looking
+        for Ollama searches for the name of a protocol, and "OpenAI" is the last
+        word you expect to find under "run it locally".
+
+        So the panel now lists what people are actually looking for — Ollama, LM
+        Studio, Groq, DeepSeek — from each provider's own `catalog`. One file
+        behind the scenes, thirteen recognisable names in front of them.
+
+    THE OTHER TWO CHANGES
+        It was 560 pixels of stacked dropdowns with no grouping, which reads as
+        a form to be endured rather than three decisions to be made. It is 760
+        wide now, and the three parts of a conversation are three numbered boxes
+        that say what they do in plain words.
+
+        And every field a provider declares was shown at once — download folders,
+        stability weights, thread counts. A setting almost nobody changes costs
+        more in the confusion it adds to the five that matter than it saves for
+        the one person who wants it, so `advanced` fields sit behind MORE.
+
+    WHAT IT COSTS WHEN NOBODY OPENS IT
+        Nothing. The button is built with the rest of the SETUP drawer, but the
+        `providers` package is imported inside `__init__` of THIS class — on the
+        click. Same lesson as the wake-word check that spent a measured 2.104
+        seconds importing `openwakeword` on the Qt thread and made the drawer
+        look broken.
+    """
+
+    changed = pyqtSignal()          # emitted on APPLY when the engine moved
+    # Emitted from a worker thread when something the machine had to be asked
+    # for — the installed voices — has arrived. A signal rather than a direct
+    # call because the worker must not touch a widget.
+    _live_ready = pyqtSignal()
+    # (provider id, [(value, label), ...]) from a worker that went and asked an
+    # endpoint what it offers.
+    _models_ready = pyqtSignal(str, list)
+    _OW = 760                       # the window's own minimum is 820
+
+    # Which provider fills each slot, and what the slot is FOR — in the words
+    # somebody configuring it would use, not the words the code uses.
+    _SLOTS = (
+        ("stt", "①", "HEARING",  "turns what you say into words"),
+        ("llm", "②", "THINKING", "understands, decides, uses your tools"),
+        ("tts", "③", "SPEAKING", "reads the answer out loud"),
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Imported HERE, on the click — never at startup. See the class docstring.
+        from memory.config_manager import (get_pipeline, get_provider_config,
+                                           get_provider_mode, get_sidecar_first,
+                                           get_sidecar_provider)
+        from providers import registry
+
+        self._registry = registry
+        self._get_cfg = get_provider_config
+        # Warm anything a provider can only learn by asking the machine, off
+        # this thread. The installed voice list costs a PowerShell subprocess —
+        # measured at 1.70 seconds — and the form asks for it on every rebuild,
+        # so without this the panel freezes for most of two seconds every time
+        # a dropdown is touched. Started here rather than at startup, because
+        # nothing in this folder may run before somebody opens it.
+        self._live_ready.connect(self._on_live_ready)
+        self._models_ready.connect(self._on_models_ready)
+        self._model_cache: dict[str, list] = {}
+        self._fetching: set = set()
+        for _kind in ("tts", "stt", "llm"):
+            for _decl in registry.discover(_kind):
+                try:
+                    _mod = __import__(f"providers.{_decl['_module']}",
+                                      fromlist=["prefetch"])
+                    _pf = getattr(_mod, "prefetch", None)
+                    if _pf:
+                        _pf(self._live_ready.emit)
+                except Exception:
+                    pass
+        self._edits: dict[str, dict] = {}       # provider id -> {key: (widget, Field)}
+        self._status: dict[str, QLabel] = {}    # provider id -> status line
+        self._more: dict[str, bool] = {}        # provider id -> advanced shown
+        # Fields deliberately not drawn — the catalog already answered them, or
+        # they are behind MORE. Tracked rather than asked of Qt: see _fields_into.
+        self._hidden: dict[str, set] = {}
+        self._picked: dict[str, str] = {}       # slot -> catalog entry id
+
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            ProvidersOverlay {{
+                background: rgba(0, 6, 10, 249);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 8px;
+            }}
+        """)
+        self.setFixedWidth(self._OW)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(22, 18, 22, 18)
+        outer.setSpacing(10)
+
+        title = QLabel("🔌  ENGINE  &  PROVIDERS")
+        title.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        outer.addWidget(title)
+
+        sub = QLabel("Choose what powers the conversation. "
+                     "Gemini is the default and needs nothing set up here.")
+        sub.setWordWrap(True)
+        sub.setFont(QFont("Courier New", 8))
+        sub.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        outer.addWidget(sub)
+
+        # ── Mode: two cards, not a dropdown ─────────────────────────────────
+        # A dropdown hides the option you did not choose. This is the one
+        # decision on the panel that changes everything below it, and both
+        # answers deserve to be readable at the same time.
+        self._mode = get_provider_mode()
+        cards = QHBoxLayout(); cards.setSpacing(10)
+        self._card_gemini = self._mode_card(
+            "☁  GEMINI LIVE",
+            "One connection carries your voice, its voice, the transcript and "
+            "the tools together. The fastest option — about half a second to "
+            "the first word.",
+            "gemini")
+        self._card_local = self._mode_card(
+            "🖥  MY OWN SETUP",
+            "Your choice of hearing, thinking and speaking. Can run entirely on "
+            "this computer, with nothing leaving it. Slower: 1.5 to 4 seconds.",
+            "pipeline")
+        cards.addWidget(self._card_gemini)
+        cards.addWidget(self._card_local)
+        outer.addLayout(cards)
+
+        # ── Body ────────────────────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(
+            "QScrollArea { background: transparent; }"
+            f"QScrollBar:vertical {{ background: {C.DARK}; width: 9px; "
+            f"margin: 0; border-radius: 4px; }}"
+            f"QScrollBar::handle:vertical {{ background: {C.BORDER_B}; "
+            f"border-radius: 4px; min-height: 30px; }}"
+            "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }"
+            "QScrollBar::add-page, QScrollBar::sub-page { background: none; }")
+        self._scroll.setMinimumHeight(230)
+        self._scroll.setMaximumHeight(360)
+        outer.addWidget(self._scroll, 1)
+
+        self._body = QWidget()
+        self._body.setStyleSheet("background: transparent;")
+        self._body_lay = QVBoxLayout(self._body)
+        self._body_lay.setContentsMargins(0, 2, 8, 2)
+        self._body_lay.setSpacing(10)
+        self._scroll.setWidget(self._body)
+
+        # Built BEFORE the body, because `_rebuild_body` writes into it — and
+        # added to the layout after, so it still sits under the scroll area.
+        self._footer = QLabel("")
+        self._footer.setWordWrap(True)
+        self._footer.setFont(QFont("Courier New", 7))
+        self._footer.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+
+        self._pipe = dict(get_pipeline())
+        self._sidecar = get_sidecar_provider()
+        self._sidecar_first = get_sidecar_first()
+        self._rebuild_body()
+
+        outer.addWidget(self._footer)
+
+        row = QHBoxLayout(); row.setSpacing(8)
+        apply_btn = QPushButton("▸  SAVE  &  APPLY")
+        apply_btn.setFixedHeight(34)
+        apply_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_btn.setStyleSheet(f"""
+            QPushButton {{ background: {C.PRI_GHO}; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 4px; }}
+            QPushButton:hover {{ background: {C.BORDER}; border-color: {C.PRI}; }}
+        """)
+        apply_btn.clicked.connect(self._apply)
+        row.addWidget(apply_btn, 2)
+
+        close = QPushButton("CLOSE")
+        close.setFixedHeight(34)
+        close.setFont(QFont("Courier New", 9))
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 4px; }}
+            QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
+        """)
+        close.clicked.connect(self.hide)
+        row.addWidget(close, 1)
+        outer.addLayout(row)
+        self._refresh_cards()
+
+    # ── pieces ───────────────────────────────────────────────────────────────
+    def _mode_card(self, title: str, body: str, value: str) -> QPushButton:
+        b = QPushButton()
+        b.setCheckable(True)
+        b.setMinimumHeight(84)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setText(f"{title}\n\n{body}")
+        b.setFont(QFont("Courier New", 7))
+        b.clicked.connect(lambda _=0, v=value: self._set_mode(v))
+        b.setProperty("modeValue", value)
+        return b
+
+    def _refresh_cards(self) -> None:
+        for card in (self._card_gemini, self._card_local):
+            on = card.property("modeValue") == self._mode
+            card.setChecked(on)
+            card.setStyleSheet(f"""
+                QPushButton {{
+                    text-align: left; padding: 10px 12px;
+                    background: {C.PRI_GHO if on else 'transparent'};
+                    color: {C.TEXT if on else C.TEXT_DIM};
+                    border: 1px solid {C.PRI_DIM if on else C.BORDER};
+                    border-radius: 5px;
+                }}
+                QPushButton:hover {{ border-color: {C.BORDER_B}; }}
+            """)
+
+    def _on_live_ready(self) -> None:
+        """A machine-supplied list has arrived — redraw once so it appears."""
+        if not self.isHidden():
+            self._rebuild_body()
+
+    # ── Asking an endpoint what it has, without being asked to ──────────────
+    def _fetch_models(self, pid: str) -> None:
+        """Go and get the model list in the background.
+
+        Pressing LIST worked, and making somebody press it was still wrong: at
+        the moment a local server is chosen, the one thing they need is the list
+        of models on it, and the app can simply go and read it. A button whose
+        only job is "now do the obvious next thing" is a button that should not
+        exist.
+
+        Off the interface thread, because it is a network call — a local server
+        answers in milliseconds and a cloud one does not, and a panel that
+        freezes while it finds out is worse than one that fills in a second
+        later. Failure is silent: not reaching the endpoint yet is the normal
+        state while somebody is still typing an address, and TEST is where a
+        real answer about reachability belongs."""
+        import threading
+
+        if not pid or pid in self._fetching:
+            return
+        try:
+            values = self._values(pid) or dict(self._get_cfg(pid))
+        except Exception:
+            values = dict(self._get_cfg(pid))
+        if not values.get("base_url") and not values.get("api_key"):
+            return
+        self._fetching.add(pid)
+
+        def work():
+            items = []
+            try:
+                inst = self._registry.build(pid, values)
+                if hasattr(inst, "models"):
+                    items = [(m, m) for m in inst.models(timeout=6.0)]
+                elif hasattr(inst, "voices"):
+                    items = list(inst.voices())
+            except Exception:
+                items = []
+            finally:
+                self._fetching.discard(pid)
+            if items:
+                self._models_ready.emit(pid, items)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _prepare(self, pid: str) -> None:
+        """Let a provider get itself ready as soon as it is configured.
+
+        Piper uses it to download the chosen voice. Generic on purpose: the
+        panel asks whether the module has a `prepare`, and providers that do not
+        need one are simply skipped — nothing here knows what a voice is."""
+        import threading
+
+        try:
+            decl = self._registry.get_declaration(pid)
+            mod = __import__(f"providers.{decl['_module']}", fromlist=["prepare"])
+            fn = getattr(mod, "prepare", None)
+        except Exception:
+            fn = None
+        if fn is None:
+            return
+        values = self._values(pid) or dict(self._get_cfg(pid))
+
+        def report(ok, msg):
+            colour = C.TEXT_DIM if ok is None else (C.GREEN if ok else C.RED)
+            mark = "" if ok is None else ("✓  " if ok else "✕  ")
+            QTimer.singleShot(0, lambda: self._say(pid, mark + msg, colour))
+
+        threading.Thread(target=lambda: fn(values, report), daemon=True).start()
+
+    def _on_models_ready(self, pid: str, items: list) -> None:
+        self._model_cache[pid] = list(items)
+        if self.isHidden():
+            return
+        key = "voice_id" if any(v != l for v, l in items) else "model"
+        entry = self._edits.get(pid, {}).get(key)
+        if entry is None:
+            entry = self._edits.get(pid, {}).get("model")
+        if entry is None or not isinstance(entry[0], QComboBox):
+            return
+        box = entry[0]
+        keep = box.currentText()
+        box.clear()
+        for value, label in items:
+            box.addItem(str(label), str(value))
+        j = box.findData(keep)
+        if j >= 0:
+            box.setCurrentIndex(j)
+        elif keep:
+            box.setCurrentText(keep)
+        self._say(pid, f"{len(items)} model{'s' if len(items) != 1 else ''} "
+                       f"found on this server — pick one above.", C.TEXT_DIM)
+
+    def _set_mode(self, value: str) -> None:
+        if value == self._mode:
+            self._refresh_cards()
+            return
+        self._mode = value
+        self._remember_edits()
+        self._refresh_cards()
+        QTimer.singleShot(0, self._rebuild_body)
+
+    def _box(self, title_widgets: list) -> tuple[QWidget, QVBoxLayout]:
+        """A bordered section. Grouping is the difference between three
+        decisions and eleven controls."""
+        w = QWidget()
+        w.setStyleSheet(f"background: {C.PANEL}; border: 1px solid {C.BORDER}; "
+                        f"border-radius: 5px;")
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(12, 10, 12, 11)
+        lay.setSpacing(5)
+        for tw in title_widgets:
+            lay.addWidget(tw)
+        return w, lay
+
+    def _label(self, text: str, size: int = 8, colour: str = None,
+               bold: bool = False) -> QLabel:
+        lb = QLabel(text)
+        lb.setWordWrap(True)
+        lb.setFont(QFont("Courier New", size,
+                         QFont.Weight.Bold if bold else QFont.Weight.Normal))
+        lb.setStyleSheet(f"color: {colour or C.TEXT_MED}; background: transparent; "
+                         f"border: none;")
+        return lb
+
+    def _combo(self) -> QComboBox:
+        box = _ScrollSafeCombo()
+        box.setFont(QFont("Courier New", 8))
+        box.setFixedHeight(29)
+        box.setStyleSheet(
+            f"QComboBox {{ background: {C.DARK}; color: {C.TEXT}; "
+            f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 3px 9px; }}"
+            f"QComboBox:hover {{ border-color: {C.BORDER_B}; }}"
+            f"QComboBox::drop-down {{ border: none; width: 18px; }}"
+            f"QComboBox QAbstractItemView {{ background: {C.DARK}; color: {C.TEXT}; "
+            f"selection-background-color: {C.PRI_GHO}; "
+            f"border: 1px solid {C.BORDER_B}; padding: 2px; }}")
+        return box
+
+    def _line(self, text: str = "") -> QLineEdit:
+        w = QLineEdit(text)
+        w.setFont(QFont("Courier New", 8))
+        w.setFixedHeight(27)
+        w.setStyleSheet(
+            f"QLineEdit {{ background: {C.DARK}; color: {C.TEXT}; "
+            f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 2px 9px; }}"
+            f"QLineEdit:focus {{ border-color: {C.PRI_DIM}; }}")
+        return w
+
+    def _btn(self, text: str, slot, colour: str = None) -> QPushButton:
+        b = QPushButton(text)
+        b.setFixedHeight(25)
+        b.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        col = colour or C.TEXT_MED
+        b.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {col};
+                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 0 12px; }}
+            QPushButton:hover {{ border-color: {C.BORDER_B}; color: {C.TEXT}; }}
+        """)
+        b.clicked.connect(slot)
+        return b
+
+    # ── catalog ──────────────────────────────────────────────────────────────
+    def _catalog(self, kind: str) -> list[tuple[str, str, dict, dict]]:
+        """(provider id, entry id, entry, declaration) for one slot.
+
+        A provider with no catalog contributes itself as a single entry, so
+        nothing has to declare one to appear."""
+        out = []
+        for decl in self._registry.discover(kind):
+            entries = decl.get("catalog") or (
+                {"id": decl["id"], "label": decl["label"],
+                 "note": decl.get("hint", ""), "local": None, "values": {}},)
+            for e in entries:
+                out.append((decl["id"], e["id"], e, decl))
+        return out
+
+    def _current_entry(self, kind: str, pid: str) -> str:
+        """Which catalog entry is selected.
+
+        STORED, not derived. The first version worked it out by comparing the
+        saved address against each entry's — which is elegant and wrong, and it
+        showed up immediately: pick "Whisper on this computer", reopen the
+        panel, and the box reads "— not set —" while the form beneath it is
+        fully drawn. That entry's address is the empty string, so any config
+        whose address had ever been touched matched nothing and fell through to
+        no selection at all.
+
+        The entry is a CHOICE somebody made, not a fact about the settings.
+        Choices get stored. The derivation is kept only as a fallback for a
+        config written before this key existed."""
+        if not pid:
+            return ""
+        cfg = self._get_cfg(pid)
+        saved = str(cfg.get("catalog") or "").strip()
+        entries = [(eid, entry) for _p, eid, entry, _d in self._catalog(kind)
+                   if _p == pid]
+        if saved and any(eid == saved for eid, _e in entries):
+            return saved
+
+        # Written before the key existed: work it out once, from the address.
+        best = ""
+        for eid, entry in entries:
+            vals = entry.get("values") or {}
+            if not vals:
+                best = best or eid            # a catch-all like "Something else"
+                continue
+            if all(str(cfg.get(k, "")).rstrip("/") == str(v).rstrip("/")
+                   for k, v in vals.items() if k in ("base_url", "backend")):
+                return eid
+        return best or (entries[0][0] if len(entries) == 1 else "")
+
+    # ── body ─────────────────────────────────────────────────────────────────
+    def _clear(self, lay) -> None:
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+            elif item.layout() is not None:
+                self._clear(item.layout())
+
+    def _rebuild_body(self) -> None:
+        # Keep whatever is in the boxes before they are destroyed.
+        #
+        # A redraw can be triggered by things the person did not do: a model
+        # list arriving from a background fetch, a slot changing, the panel
+        # settling after a click. Every one of those replaces the widgets, and
+        # anything typed but not yet saved went with them — most visibly a model
+        # name entered by hand, which came back empty on SAVE with no
+        # indication that it had been dropped.
+        self._remember_edits()
+        self._clear(self._body_lay)
+        self._edits.clear()
+        self._status.clear()
+
+        if self._mode == "pipeline":
+            for slot, num, name, what in self._SLOTS:
+                self._body_lay.addWidget(self._slot_box(slot, num, name, what))
+        else:
+            w, lay = self._box([])
+            lay.addWidget(self._label(
+                "Nothing to set up. Your voice goes to Gemini and comes back as "
+                "speech over one connection, with the transcript and every tool "
+                "call on the same wire.", 8, C.TEXT_DIM))
+            lay.addWidget(self._label(
+                "Pick MY OWN SETUP above to run it on your own machine, or "
+                "through another company's model.", 7, C.TEXT_DIM))
+            self._body_lay.addWidget(w)
+
+        self._body_lay.addWidget(self._sidecar_box_widget())
+        self._body_lay.addStretch(1)
+        self._update_footer()
+
+    def _slot_box(self, slot: str, num: str, name: str, what: str) -> QWidget:
+        head = self._label(f"{num}  {name}", 9, C.PRI, bold=True)
+        w, lay = self._box([head, self._label(what, 7, C.TEXT_DIM)])
+
+        entries = self._catalog(slot)
+        box = self._combo()
+        box.addItem("— not set —", ("", ""))
+        for pid, eid, entry, decl in entries:
+            label = entry["label"]
+            if entry.get("local") is True:
+                label = f"🖥  {label}"
+            elif entry.get("local") is False:
+                label = f"☁  {label}"
+            else:
+                label = f"    {label}"
+            note = entry.get("note") or ""
+            if not decl.get("_available", True):
+                note = (note + " · needs install").strip(" ·")
+            box.addItem(f"{label}{'   —  ' + note if note else ''}", (pid, eid))
+
+        pid_now = self._pipe.get(slot, "")
+        eid_now = self._picked.get(slot) or self._current_entry(slot, pid_now)
+        idx = box.findData((pid_now, eid_now)) if pid_now else 0
+        if pid_now and idx < 0:
+            # A provider IS chosen — the form for it is drawn right below — so
+            # the box must never read "not set". It did, and it was the first
+            # thing anybody noticed: an entry whose settings no longer match
+            # any catalog row (upgraded from an older layout, or edited by
+            # hand) resolved to nothing at all, and the panel contradicted
+            # itself on screen. Falling back to that provider's first row is
+            # always closer to the truth than claiming nothing is selected.
+            for i in range(box.count()):
+                data = box.itemData(i)
+                if data and data[0] == pid_now:
+                    idx = i
+                    self._picked[slot] = data[1]
+                    break
+        box.setCurrentIndex(idx if idx >= 0 else 0)
+        box.currentIndexChanged.connect(
+            lambda _i, s=slot, b=box: self._slot_changed(s, b))
+        if pid_now:
+            QTimer.singleShot(0, lambda p=pid_now: self._prepare(p))
+        lay.addWidget(box)
+
+        if pid_now:
+            self._fields_into(lay, slot, pid_now, eid_now)
+            # If a list was already fetched, use it; if not, go and get one.
+            if self._model_cache.get(pid_now):
+                QTimer.singleShot(0, lambda p=pid_now: self._on_models_ready(
+                    p, self._model_cache[p]))
+            else:
+                QTimer.singleShot(0, lambda p=pid_now: self._fetch_models(p))
+        return w
+
+    def _slot_changed(self, slot: str, box: QComboBox) -> None:
+        pid, eid = box.currentData() or ("", "")
+        self._remember_edits()
+        self._pipe[slot] = pid
+        self._picked[slot] = eid
+        if pid and eid:
+            # Applying the shortcut is the entire point of the catalog: pick
+            # Ollama and the address is already right. The choice itself is
+            # saved alongside it — see _current_entry for why.
+            from memory.config_manager import save_provider_config
+            for _p, _e, entry, _d in self._catalog(slot):
+                if _p == pid and _e == eid:
+                    values = dict(entry.get("values") or {})
+                    values["catalog"] = eid
+                    save_provider_config(pid, values)
+                    break
+            self._fetch_models(pid)
+        QTimer.singleShot(0, self._rebuild_body)
+
+    def _fields_into(self, lay, slot: str, pid: str, eid: str) -> None:
+        from providers.base import Field
+
+        decl = self._registry.get_declaration(pid)
+        if decl is None:
+            return
+        stored = dict(self._get_cfg(pid))
+        entry = next((e for p, i, e, _ in self._catalog(slot)
+                      if p == pid and i == eid), {})
+        is_local = entry.get("local") is True
+        entry_values = entry.get("values") or {}
+        # An entry that MENTIONS the address has answered it — including
+        # answering it with "", which is what the local speech recogniser does
+        # because it does not use one at all. Testing the value rather than the
+        # presence of the key is what put an empty "API address" box under
+        # "Whisper on this computer", inviting somebody to fill in a field that
+        # backend never reads.
+        custom = "base_url" not in entry_values
+
+        # Three buckets, tracked explicitly.
+        #
+        # `isHidden()` is NOT a usable test for "I hid this on purpose": a widget
+        # that has not been added to a layout yet is already hidden, so asking it
+        # returned True for every field and the form came up completely empty.
+        # Which of these a field lands in is a decision made here, so it is kept
+        # here rather than inferred from Qt afterwards.
+        shown: dict = {}        # drawn now
+        carried: dict = {}      # kept for saving, never drawn — answered by the catalog
+        advanced: list = []     # drawn only behind MORE
+
+        for f in decl.get("needs", ()):
+            if not isinstance(f, Field):
+                continue
+            # Do not show what the catalog entry already answered. The address
+            # somebody did not have to type is one more thing to read and one
+            # more thing to break; a key a local server never asks for is a box
+            # that makes people think they need an account.
+            if f.key == "base_url" and not custom:
+                carried[f.key] = (self._line(
+                    str(stored.get(f.key, f.default) or "")), f)
+                continue
+            if f.key == "api_key" and is_local:
+                carried[f.key] = (self._line(str(stored.get(f.key, "") or "")), f)
+                continue
+            if f.key == "backend":
+                carried[f.key] = (self._line(
+                    str(entry.get("values", {}).get("backend")
+                        or stored.get(f.key, f.default) or "")), f)
+                continue
+            w = self._make_widget(pid, f, stored.get(f.key, f.default))
+            if f.advanced:
+                advanced.append((f, w))
+            else:
+                shown[f.key] = (w, f)
+
+        for _key, (w, f) in shown.items():
+            lay.addWidget(self._label(
+                f.label + ("" if f.required else "   (optional)"), 7, C.TEXT_DIM))
+            lay.addWidget(w)
+            # A text box already shows its hint as placeholder text. Adding the
+            # label as well printed every hint twice, which is how the panel
+            # came to look careless.
+            if f.hint and not isinstance(w, QLineEdit):
+                lay.addWidget(self._label(f.hint, 7, C.TEXT_DIM))
+
+        fields = dict(shown)
+        fields.update(carried)
+        self._hidden[pid] = set(carried) | {f.key for f, _w in advanced}
+
+        # Buttons and status.
+        status = self._label("", 7, C.TEXT_DIM)
+        self._status[pid] = status
+
+        brow = QHBoxLayout(); brow.setSpacing(6)
+        brow.addWidget(self._btn("TEST", lambda _=0, p=pid: self._test(p), C.PRI))
+        # Not "LIST" any more: the list arrives on its own when a service is
+        # chosen. This is the button for when it did not — the server was
+        # starting up, or a model has just been pulled.
+        if any(k in shown for k in ("model", "voice_id", "voice")):
+            brow.addWidget(self._btn("↻ REFRESH", lambda _=0, p=pid: self._list(p)))
+        if advanced:
+            brow.addWidget(self._btn(
+                ("⌃ LESS" if self._more.get(pid) else "⌄ MORE"),
+                lambda _=0, p=pid: self._toggle_more(p)))
+        if not decl.get("_available", True) and decl.get("install"):
+            brow.addWidget(self._btn(f"INSTALL {decl['install']}",
+                                     lambda _=0, p=pid: self._install(p), C.ACC2))
+        brow.addStretch(1)
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent; border: none;")
+        holder.setLayout(brow)
+        lay.addWidget(holder)
+        lay.addWidget(status)
+
+        if self._more.get(pid):
+            lay.addWidget(self._label("─" * 46, 7, C.BORDER))
+            for f, w in advanced:
+                lay.addWidget(self._label(f"{f.label}   (optional)", 7, C.TEXT_DIM))
+                lay.addWidget(w)
+                if f.hint and not isinstance(w, QLineEdit):
+                    lay.addWidget(self._label(f.hint, 7, C.TEXT_DIM))
+                fields[f.key] = (w, f)
+                self._hidden[pid].discard(f.key)
+        else:
+            for f, w in advanced:
+                fields[f.key] = (w, f)
+
+        self._edits[pid] = fields
+
+    def _make_widget(self, pid: str, f, value):
+        if f.kind == "choice":
+            w = self._combo()
+            choices = list(self._live_choices(pid, f.key) or f.choices)
+            if not f.required:
+                w.addItem("— default —", "")
+            for c in choices:
+                w.addItem(str(c), str(c))
+            w.setEditable(f.key in ("base_url", "model", "voice_id"))
+            if w.isEditable():
+                w.lineEdit().setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+            if value:
+                j = w.findData(str(value))
+                if j < 0:
+                    w.addItem(str(value), str(value))
+                    j = w.count() - 1
+                w.setCurrentIndex(j)
+                if w.isEditable():
+                    w.setCurrentText(str(value))
+            return w
+        if f.kind == "bool":
+            w = self._combo()
+            w.addItem("no", "")
+            w.addItem("yes", "1")
+            w.setCurrentIndex(1 if str(value) in ("1", "True", "true") else 0)
+            return w
+        w = self._line(str(value if value is not None else ""))
+        if f.kind == "secret":
+            w.setEchoMode(QLineEdit.EchoMode.Password)
+        if f.hint:
+            w.setPlaceholderText(f.hint[:64])
+        return w
+
+    def _toggle_more(self, pid: str) -> None:
+        self._more[pid] = not self._more.get(pid)
+        self._remember_edits()
+        QTimer.singleShot(0, self._rebuild_body)
+
+    def _sidecar_box_widget(self) -> QWidget:
+        head = self._label("⚡  BACKGROUND REQUESTS", 9, C.PRI, bold=True)
+        w, lay = self._box([head])
+        lay.addWidget(self._label(
+            "Reading a document, looking at your screen, writing code — the "
+            "assistant's own requests, not the conversation. These use Gemini's "
+            "text quota, which runs out before the voice does. Sending them "
+            "somewhere else keeps them working, and changes nothing you hear.",
+            7, C.TEXT_DIM))
+
+        # Read the stored choice BEFORE the box exists. The first version asked
+        # `_sidecar_choice()`, which reads the combo — and at this point that is
+        # the empty box being built, so the answer was always "nothing chosen"
+        # and the form under it never appeared.
+        cur_pid = self._sidecar
+        cur_eid = self._current_entry("llm", cur_pid) if cur_pid else ""
+
+        self._sidecar_combo = self._combo()
+        self._sidecar_combo.addItem("Gemini only  —  the way it has always been",
+                                    ("", ""))
+        for pid, eid, entry, decl in self._catalog("llm"):
+            mark = "🖥" if entry.get("local") else ("☁" if entry.get("local")
+                                                   is False else "  ")
+            self._sidecar_combo.addItem(
+                f"{mark}  Fall back to {entry['label']}", (pid, eid))
+        i = self._sidecar_combo.findData((cur_pid, cur_eid)) if cur_pid else 0
+        if cur_pid and i < 0:
+            for j in range(1, self._sidecar_combo.count()):
+                if (self._sidecar_combo.itemData(j) or ("", ""))[0] == cur_pid:
+                    i = j
+                    break
+        self._sidecar_combo.setCurrentIndex(max(0, i))
+        self._sidecar_combo.currentIndexChanged.connect(self._sidecar_changed)
+        lay.addWidget(self._sidecar_combo)
+
+        self._first_combo = self._combo()
+        self._first_combo.addItem("Try Gemini first  —  faster", "after")
+        self._first_combo.addItem(
+            "Try the other one first  —  keeps more on your machine", "before")
+        self._first_combo.setCurrentIndex(1 if self._sidecar_first else 0)
+        lay.addWidget(self._first_combo)
+
+        # In pipeline mode the model chosen for ② THINKING answers these too, so
+        # there is nothing more to fill in. In Gemini mode there IS no ② section
+        # — and the first version still said "it uses whatever you set up under
+        # ② THINKING", which named a box that was not on the screen. So a
+        # service picked here gets its own form, right here.
+        if cur_pid:
+            if self._mode == "pipeline" and cur_pid == self._pipe.get("llm"):
+                lay.addWidget(self._label(
+                    "Uses the model you chose for ② THINKING.", 7, C.TEXT_DIM))
+            else:
+                self._fields_into(lay, "llm", cur_pid, cur_eid)
+        else:
+            lay.addWidget(self._label(
+                "Left as it is, these keep using Gemini and stop working when "
+                "its text quota runs out.", 7, C.TEXT_DIM))
+        return w
+
+    def _sidecar_choice(self) -> tuple:
+        """(provider id, catalog entry id) for the background-request model."""
+        box = getattr(self, "_sidecar_combo", None)
+        if box is not None:
+            data = box.currentData()
+            if isinstance(data, tuple):
+                return data
+        pid = self._sidecar
+        return (pid, self._current_entry("llm", pid) if pid else "")
+
+    def _sidecar_changed(self, _ix) -> None:
+        pid, eid = self._sidecar_choice()
+        self._remember_edits()
+        self._sidecar = pid
+        if pid and eid:
+            from memory.config_manager import save_provider_config
+            for _p, _e, entry, _d in self._catalog("llm"):
+                if _p == pid and _e == eid:
+                    values = dict(entry.get("values") or {})
+                    values["catalog"] = eid
+                    save_provider_config(pid, values)
+                    break
+        QTimer.singleShot(0, self._rebuild_body)
+
+    def _update_footer(self) -> None:
+        if self._mode != "pipeline":
+            self._footer.setText(
+                "Gemini Live. Nothing on this panel changes the conversation.")
+            return
+        missing = [name for slot, _n, name, _w in self._SLOTS
+                   if not self._pipe.get(slot)]
+        if "THINKING" in missing:
+            self._footer.setText(
+                "⚠  ② THINKING is not set — without it the assistant falls back "
+                "to Gemini Live and says so in the log.")
+        elif missing:
+            words = " and ".join(f"{m.lower()}" for m in missing)
+            self._footer.setText(
+                f"Only {words} is missing — it will run, but you will type "
+                f"instead of speak, or read instead of listen.")
+        else:
+            self._footer.setText(
+                "All three set. SAVE & APPLY reconnects; the conversation is kept.")
+
+    # ── actions ──────────────────────────────────────────────────────────────
+    def _live_choices(self, pid: str, key: str) -> tuple:
+        try:
+            decl = self._registry.get_declaration(pid)
+            mod = __import__(f"providers.{decl['_module']}", fromlist=["choices_for"])
+            fn = getattr(mod, "choices_for", None)
+            return tuple(fn(key)) if fn else ()
+        except Exception:
+            return ()
+
+    def _values(self, pid: str) -> dict:
+        out = {}
+        hidden = self._hidden.get(pid, set())
+        stored = self._get_cfg(pid)
+        for key, (w, _f) in self._edits.get(pid, {}).items():
+            if isinstance(w, QComboBox):
+                value = (w.currentText().strip() if w.isEditable()
+                         else (w.currentData() or ""))
+            else:
+                value = w.text().strip()
+            # A field nobody can see must never blank out a setting that has
+            # one. These widgets are rebuilt on every redraw, and a redraw that
+            # raced a background fetch could recreate a hidden address as empty
+            # and then save that over a working one — leaving a pipeline that
+            # had been configured correctly pointing at nothing, with no visible
+            # cause. Clearing a value is still possible; it just has to be done
+            # in a box that is on screen.
+            if not value and key in hidden and stored.get(key):
+                continue
+            out[key] = value
+        return out
+
+    def _remember_edits(self) -> None:
+        """Keep what has been typed when the form is rebuilt.
+
+        Without it, changing the speech engine wiped an API key somebody had
+        just entered into the box above."""
+        from memory.config_manager import save_provider_config
+        for pid in list(self._edits):
+            try:
+                save_provider_config(pid, self._values(pid))
+            except Exception:
+                pass
+
+    def _say(self, pid: str, text: str, colour: str) -> None:
+        lb = self._status.get(pid)
+        if lb is not None:
+            lb.setText(text)
+            lb.setStyleSheet(f"color: {colour}; background: transparent; border: none;")
+
+    def _test(self, pid: str) -> None:
+        # Read the boxes BEFORE letting Qt run. `processEvents` will happily
+        # deliver a queued rebuild, which deletes the very widgets this is
+        # about to read — and a deleted QWidget raises rather than returning
+        # something wrong, so it takes the click down with it.
+        values = self._values(pid)
+        self._say(pid, "checking…", C.TEXT_DIM)
+        QApplication.processEvents()
+        try:
+            inst = self._registry.build(pid, values)
+            probe = getattr(inst, "probe", None)
+            if probe is None:
+                self._say(pid, "Nothing to check for this one.", C.TEXT_DIM)
+                return
+            ok, msg = probe()
+        except Exception as e:
+            self._say(pid, f"✕  {type(e).__name__}: {str(e)[:150]}", C.RED)
+            return
+        self._say(pid, ("✓  " if ok else "✕  ") + msg, C.GREEN if ok else C.ACC)
+        # TEST is also where "can this model see?" gets answered — by asking the
+        # endpoint, not the user. Write the answer back into the stored settings
+        # so the assistant is told the truth about its own eyes.
+        seen = (getattr(inst, "caps", {}) or {}).get("vision")
+        if ok and seen is not None:
+            from memory.config_manager import save_provider_config
+            save_provider_config(pid, {"vision": "1" if seen else ""})
+            entry = self._edits.get(pid, {}).get("vision")
+            if entry is not None and isinstance(entry[0], QComboBox):
+                entry[0].setCurrentIndex(1 if seen else 0)
+
+    def _list(self, pid: str) -> None:
+        values = self._values(pid)          # before processEvents — see _test
+        self._say(pid, "reading…", C.TEXT_DIM)
+        QApplication.processEvents()
+        try:
+            inst = self._registry.build(pid, values)
+            if hasattr(inst, "models"):
+                items, key = [(m, m) for m in inst.models()], "model"
+            elif hasattr(inst, "voices"):
+                items, key = list(inst.voices()), "voice_id"
+            else:
+                self._say(pid, "Nothing to list for this one.", C.TEXT_DIM)
+                return
+        except Exception as e:
+            self._say(pid, f"✕  {type(e).__name__}: {str(e)[:150]}", C.RED)
+            return
+
+        entry = self._edits.get(pid, {}).get(key)
+        if entry is None or not items:
+            self._say(pid, f"✓  {len(items)} found." if items else "None found.",
+                      C.GREEN if items else C.TEXT_DIM)
+            return
+        box = entry[0]
+        if isinstance(box, QComboBox):
+            keep = box.currentText()
+            box.clear()
+            for value, label in items:
+                box.addItem(str(label), str(value))
+            j = box.findData(keep)
+            box.setCurrentIndex(j if j >= 0 else 0)
+        else:
+            self._say(pid, f"✓  {len(items)} available: "
+                           f"{', '.join(str(v) for v, _ in items[:8])}", C.GREEN)
+            return
+        self._say(pid, f"✓  {len(items)} available — pick one above.", C.GREEN)
+
+    def _install(self, pid: str) -> None:
+        """Fetch a provider's optional dependency, off the Qt thread — pip takes
+        tens of seconds and a frozen window looks like a crashed one."""
+        import subprocess
+        import sys as _sys
+        import threading
+
+        decl = self._registry.get_declaration(pid) or {}
+        pkg = decl.get("install")
+        if not pkg:
+            return
+        self._say(pid, f"installing {pkg} — this can take a minute…", C.ACC2)
+
+        def work():
+            try:
+                r = subprocess.run(
+                    [_sys.executable, "-m", "pip", "install", pkg],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
+                good = r.returncode == 0
+                tail = r.stdout.decode("utf-8", "replace").strip().splitlines()
+                msg = ("✓  installed — close and reopen this panel"
+                       if good else (tail[-1][:150] if tail else "pip failed"))
+            except Exception as e:
+                good, msg = False, f"{type(e).__name__}: {str(e)[:120]}"
+            QTimer.singleShot(0, lambda: self._say(pid, msg,
+                                                   C.GREEN if good else C.RED))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply(self) -> None:
+        from memory.config_manager import (get_pipeline, get_provider_mode,
+                                           save_providers)
+
+        before = (get_provider_mode(), dict(get_pipeline()))
+
+        # ONE write, not five. See save_providers for what the five cost.
+        creds = {pid: self._values(pid) for pid in list(self._edits)}
+        for slot, eid in self._picked.items():
+            pid = self._pipe.get(slot, "")
+            if pid and eid:
+                creds.setdefault(pid, {})["catalog"] = eid
+        sidecar_pid, sidecar_eid = self._sidecar_choice()
+        if sidecar_pid and sidecar_eid:
+            creds.setdefault(sidecar_pid, {}).setdefault("catalog", sidecar_eid)
+
+        save_providers(
+            mode=self._mode,
+            pipeline={"stt": self._pipe.get("stt", ""),
+                      "llm": self._pipe.get("llm", ""),
+                      "tts": self._pipe.get("tts", "")},
+            creds=creds,
+            sidecar=sidecar_pid,
+            sidecar_first=self._first_combo.currentData() == "before",
+        )
+
+        # Providers are cached by configuration; a changed setting must not go
+        # on being served by an object built from the old one.
+        try:
+            self._registry.reset()
+        except Exception:
+            pass
+
+        after = (get_provider_mode(), dict(get_pipeline()))
+        self.hide()
+        # Background-request settings take effect on the next call with no
+        # reconnect. Only the conversation engine needs the session rebuilt.
+        if before != after:
+            self.changed.emit()
 
 
 class ClipboardPanel(QWidget):
@@ -2889,7 +4149,8 @@ class RemoteKeyOverlay(QWidget):
     _OW, _OH = 400, 465
 
     def __init__(self, url: str, key: str, auto_login_url: str = "",
-                 manual_url: str = "", expiry_secs: int = 600, parent=None):
+                 manual_url: str = "", expiry_secs: int = 600, parent=None,
+                 bind_error: str = ""):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
@@ -2939,6 +4200,40 @@ class RemoteKeyOverlay(QWidget):
         self._update_qr(auto_login_url)
 
         lay.addWidget(_lbl("Scan with phone camera to connect instantly", 8, color=C.TEXT_DIM))
+
+        # THE ONE FAILURE THAT LOOKS LIKE THE SERVER BEING OFF.
+        #
+        # Windows writes a BLOCK rule for an executable when its "Allow access?"
+        # prompt is dismissed, and a block overrides every allow rule there is —
+        # including the port rule this app carefully creates. The phone then
+        # reports "refused to connect" while the server is running perfectly.
+        #
+        # It is invisible from the HUD, which is where the person scanning the
+        # QR code is looking, and it is per-EXECUTABLE: the shortcut runs
+        # pythonw.exe while an editor runs python.exe, so it can block one launch
+        # method and not the other on the same machine. That difference is
+        # unguessable without being told, so it is said here.
+        # Whatever is stopping this from working, say it HERE — beside the QR
+        # code, where the person about to scan it is looking. A dashboard that
+        # cannot be reached and does not explain why is the single most
+        # frustrating failure this app has.
+        if bind_error:
+            lay.addWidget(_lbl("⚠  " + bind_error, 8, color="#f4b942"))
+
+        try:
+            from dashboard.server import blocking_firewall_rules
+            _blocked = blocking_firewall_rules()
+        except Exception:
+            _blocked = []
+        if _blocked:
+            warn = _lbl(
+                "⚠  Windows is blocking incoming connections to this copy of "
+                "Python, so your phone cannot reach this page. Restart JARVIS "
+                "and accept the Windows prompt, or remove the rules named "
+                + ", ".join(sorted({n for n, _ in _blocked}))
+                + " under Windows Defender Firewall → Inbound Rules.",
+                8, color="#f4b942")
+            lay.addWidget(warn)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet(f"color: {C.BORDER}; margin: 1px 0;")
@@ -3875,7 +5170,7 @@ class MainWindow(QMainWindow):
             # ── xdg-user-dir honours localized names (~/Masaüstü, …) ──────
             try:
                 out = subprocess.run(["xdg-user-dir", "DESKTOP"],
-                                     capture_output=True, text=True, timeout=5)
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
                 p = Path(out.stdout.strip())
                 if out.stdout.strip() and p != home and p.is_dir():
                     return p
@@ -4437,6 +5732,19 @@ class MainWindow(QMainWindow):
         settings_btn.setStyleSheet(_BTN_STYLE_DIM)
         settings_btn.clicked.connect(self._open_plugin_settings)
         lay.addWidget(settings_btn)
+
+        # The button is built here with the rest of the drawer; the panel behind
+        # it — and the whole providers package — is imported on the click. The
+        # drawer used to stutter for a measured 2.104 seconds because a state
+        # check imported openwakeword while it was being built, and adding a
+        # second thing that does that would undo the fix rather than repeat it.
+        prov_btn = QPushButton("🔌  ENGINE & PROVIDERS")
+        prov_btn.setFixedHeight(26)
+        prov_btn.setFont(QFont("Courier New", 7))
+        prov_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        prov_btn.setStyleSheet(_BTN_STYLE_DIM)
+        prov_btn.clicked.connect(self._open_providers)
+        lay.addWidget(prov_btn)
 
         w.adjustSize()
         return w
@@ -5109,12 +6417,14 @@ class MainWindow(QMainWindow):
         key    = result[1]
         auto   = result[2] if len(result) >= 3 else ""
         manual = result[3] if len(result) >= 4 else url
+        berr   = result[4] if len(result) >= 5 else ""
         if self._remote_overlay:
             self._remote_overlay._do_close()
         cw  = self.centralWidget()
         ow, oh = RemoteKeyOverlay._OW, RemoteKeyOverlay._OH
         ov  = RemoteKeyOverlay(url, key, auto_login_url=auto, manual_url=manual,
-                               expiry_secs=600, parent=cw)
+                               expiry_secs=600, parent=cw,
+                               bind_error=berr)
         ov.set_new_key_callback(self.on_remote_clicked)
         ov.setGeometry(
             (cw.width()  - ow) // 2,
@@ -5588,6 +6898,40 @@ class MainWindow(QMainWindow):
 
     def _on_audio_devices_applied(self):
         self._log.append_log("SYS: Audio devices updated.")
+        if self.on_audio_device_change:
+            self.on_audio_device_change()
+
+    # ── Engine & providers ───────────────────────────────────────────────────
+
+    def _open_providers(self):
+        """Open the engine panel. Everything it needs is imported on this call.
+
+        A failure here must not take the drawer with it — the folder can be
+        deleted, which is the point of it being a folder, and the honest answer
+        to that is a line in the log rather than a traceback.
+        """
+        try:
+            ov = ProvidersOverlay(parent=self.centralWidget())
+        except ImportError:
+            self._log.append_log(
+                "SYS: The providers folder is not installed — "
+                "the assistant runs on Gemini Live.")
+            return
+        except Exception as e:
+            self._log.append_log(f"SYS: Provider settings unavailable: {e}")
+            return
+        ov.changed.connect(self._on_providers_applied)
+        self._centre_overlay(ov)
+        self._providers_overlay = ov        # keep a reference so it isn't GC'd
+
+    def _on_providers_applied(self):
+        """Rebuild the session so the new engine takes over.
+
+        Reuses the audio-device callback rather than adding a second one: both
+        mean 'the conversation has to be rebuilt', main.py already keeps the
+        transcript across such a rebuild through session resumption, and one
+        path that is known to work is better than two that look alike."""
+        self._log.append_log("SYS: Engine settings saved — reconnecting.")
         if self.on_audio_device_change:
             self.on_audio_device_change()
 
