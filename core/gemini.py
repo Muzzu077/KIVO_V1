@@ -296,17 +296,104 @@ def _cooling(model: str) -> bool:
 
 
 def api_key(refresh: bool = False) -> str:
-    """The Gemini key from config/api_keys.json. Cached; never raises."""
+    """The API key from config/api_keys.json. Cached; never raises."""
     global _cached_key
     with _key_lock:
         if _cached_key is not None and not refresh:
             return _cached_key
         try:
             data = json.loads(_KEY_FILE.read_text(encoding="utf-8"))
-            _cached_key = str(data.get("gemini_api_key") or "")
+            provider = str(data.get("llm_provider", "")).lower()
+            if provider == "openrouter":
+                _cached_key = str(data.get("openrouter_api_key") or data.get("gemini_api_key") or "")
+            else:
+                _cached_key = str(data.get("gemini_api_key") or data.get("openrouter_api_key") or "")
         except Exception:
             _cached_key = ""
         return _cached_key
+
+
+def _is_openrouter(key: str = "") -> bool:
+    k = key or api_key()
+    if k.startswith("sk-or-"):
+        return True
+    try:
+        data = json.loads(_KEY_FILE.read_text(encoding="utf-8"))
+        if str(data.get("llm_provider", "")).lower() == "gemini":
+            return False
+        return str(data.get("llm_provider", "")).lower() == "openrouter"
+    except Exception:
+        return False
+
+
+def _call_openrouter(contents, config=None, timeout_ms: int = DEFAULT_TIMEOUT_MS, key: str = ""):
+    import requests
+    resolved_key = key or api_key()
+    model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    try:
+        data = json.loads(_KEY_FILE.read_text(encoding="utf-8"))
+        model = data.get("llm_model") or model
+    except Exception:
+        pass
+
+    system = ""
+    if config is not None:
+        system = getattr(config, "system_instruction", None) or \
+            (config.get("system_instruction") if isinstance(config, dict) else "") or ""
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": str(system)})
+
+    parts = _to_live_parts(contents)
+    text_pieces = []
+    content_list = []
+    has_images = False
+    for p in parts:
+        if isinstance(p, dict) and "inline_data" in p:
+            mime = p["inline_data"].get("mime_type", "image/jpeg")
+            b64 = p["inline_data"].get("data", "")
+            content_list.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"}
+            })
+            has_images = True
+        elif isinstance(p, dict) and "text" in p:
+            text_pieces.append(p["text"])
+            content_list.append({"type": "text", "text": p["text"]})
+        elif isinstance(p, str):
+            text_pieces.append(p)
+            content_list.append({"type": "text", "text": p})
+
+    user_content = content_list if has_images else "\n".join(text_pieces)
+    messages.append({"role": "user", "content": user_content})
+
+    payload = {
+        "model": model,
+        "messages": messages,
+    }
+
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {resolved_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/Mark-LV",
+                "X-Title": "Mark-LV",
+            },
+            json=payload,
+            timeout=max(10.0, timeout_ms / 1000.0)
+        )
+        if resp.status_code != 200:
+            print(f"[OpenRouter] error {resp.status_code}: {resp.text[:200]}")
+            return None
+        data = resp.json()
+        reply_text = data["choices"][0]["message"].get("content") or ""
+        return _Reply(reply_text)
+    except Exception as e:
+        print(f"[OpenRouter] request failed: {e}")
+        return None
 
 
 def client(timeout_ms: int = DEFAULT_TIMEOUT_MS, key: str = ""):
@@ -485,8 +572,11 @@ def call(contents, tier: str = FAST, config=None,
 
     resolved_key = key or api_key()
     if not resolved_key:
-        print("[Gemini] no Gemini API key is configured")
+        print("[Gemini] no Gemini or OpenRouter API key is configured")
         return None
+
+    if _is_openrouter(resolved_key):
+        return _call_openrouter(contents, config=config, timeout_ms=timeout_ms, key=resolved_key)
 
     cl = None
     tried = [m for m in ladder if not _cooling(m)] or list(ladder)

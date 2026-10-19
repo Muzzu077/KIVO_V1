@@ -154,7 +154,17 @@ def _user_profile() -> dict:
         pass
     return {}
 
+def _is_wayland() -> bool:
+    return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland")
+
 def _type(text: str, interval: float = 0.03) -> str:
+    import shutil
+    if _is_wayland() and shutil.which("wtype"):
+        try:
+            subprocess.run(["wtype", "--", text], timeout=5, capture_output=True)
+            return f"Typed: {text[:60]}{'…' if len(text) > 60 else ''}"
+        except Exception:
+            pass
     _require_pyautogui()
     time.sleep(0.3)
     pyautogui.typewrite(text, interval=interval)
@@ -162,20 +172,11 @@ def _type(text: str, interval: float = 0.03) -> str:
 
 
 def _smart_type(text: str, clear_first: bool = True) -> str:
-    _require_pyautogui()
     if clear_first:
         _clear_field()
         time.sleep(0.1)
 
-    if len(text) > 20 and _PYPERCLIP:
-        pyperclip.copy(text)
-        time.sleep(0.1)
-        paste_key = "command" if _get_os() == "mac" else "ctrl"
-        pyautogui.hotkey(paste_key, "v")
-        return f"Smart-typed (clipboard): {text[:60]}{'…' if len(text) > 60 else ''}"
-
-    pyautogui.typewrite(text, interval=0.04)
-    return f"Smart-typed: {text[:60]}{'…' if len(text) > 60 else ''}"
+    return _clipboard_paste(text) if len(text) > 15 else _type(text)
 
 
 def _click(x=None, y=None, button: str = "left", clicks: int = 1) -> str:
@@ -188,12 +189,37 @@ def _click(x=None, y=None, button: str = "left", clicks: int = 1) -> str:
 
 
 def _hotkey(*keys) -> str:
+    import shutil
+    if _is_wayland() and shutil.which("wtype"):
+        try:
+            cmd = ["wtype"]
+            modifiers = [k.lower() for k in keys[:-1]]
+            main_key = keys[-1].lower()
+            if main_key in ("enter", "return"):
+                main_key = "Return"
+            for m in modifiers:
+                cmd.extend(["-M", m])
+            cmd.extend(["-k", main_key])
+            for m in reversed(modifiers):
+                cmd.extend(["-m", m])
+            subprocess.run(cmd, timeout=4, capture_output=True)
+            return f"Hotkey: {'+'.join(keys)}"
+        except Exception:
+            pass
     _require_pyautogui()
     pyautogui.hotkey(*keys)
     return f"Hotkey: {'+'.join(keys)}"
 
 
 def _press(key: str) -> str:
+    import shutil
+    if _is_wayland() and shutil.which("wtype"):
+        try:
+            key_clean = "Return" if key.lower() in ("enter", "return") else key
+            subprocess.run(["wtype", "-k", key_clean], timeout=3, capture_output=True)
+            return f"Pressed: {key}"
+        except Exception:
+            pass
     _require_pyautogui()
     pyautogui.press(key)
     return f"Pressed: {key}"
@@ -221,6 +247,14 @@ def _drag(x1: int, y1: int, x2: int, y2: int, duration: float = 0.5) -> str:
 
 
 def _clipboard_get() -> str:
+    import shutil
+    if _is_wayland() and shutil.which("wl-paste"):
+        try:
+            r = subprocess.run(["wl-paste", "-n"], capture_output=True, text=True, timeout=3)
+            if r.returncode == 0:
+                return r.stdout
+        except Exception:
+            pass
     if _PYPERCLIP:
         return pyperclip.paste()
     _hotkey("ctrl", "c")
@@ -229,6 +263,15 @@ def _clipboard_get() -> str:
 
 
 def _clipboard_paste(text: str) -> str:
+    import shutil
+    if _is_wayland() and shutil.which("wl-copy") and shutil.which("wtype"):
+        try:
+            subprocess.run(["wl-copy", "--", text], timeout=3, capture_output=True)
+            time.sleep(0.1)
+            subprocess.run(["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"], timeout=3, capture_output=True)
+            return f"Pasted: {text[:60]}{'…' if len(text) > 60 else ''}"
+        except Exception:
+            pass
     if _PYPERCLIP:
         pyperclip.copy(text)
         time.sleep(0.1)
@@ -240,9 +283,16 @@ def _clipboard_paste(text: str) -> str:
 
 
 def _screenshot(save_path: str | None = None) -> str:
-    _require_pyautogui()
     path = _safe_screenshot_path(save_path)
-    img  = pyautogui.screenshot()
+    try:
+        from core.desktop_context import get_desktop_context
+        ctx = get_desktop_context()
+        if ctx.screenshot_screen(str(path)):
+            return f"Screenshot saved: {path}"
+    except Exception:
+        pass
+    _require_pyautogui()
+    img = pyautogui.screenshot()
     img.save(str(path))
     return f"Screenshot saved: {path}"
 

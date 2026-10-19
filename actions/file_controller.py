@@ -1,6 +1,7 @@
 import os
 import shutil
 import platform
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -621,6 +622,78 @@ def organize_desktop() -> str:
         return f"Could not organize desktop: {e}"
 
 
+def _quick_find(term: str) -> Path | None:
+    if not term:
+        return None
+    raw_p = Path(term).expanduser()
+    if raw_p.exists():
+        return raw_p
+    term_lower = term.lower()
+    search_dirs = [
+        _get_desktop(),
+        _get_downloads(),
+        _get_documents(),
+        Path.home(),
+        Path.cwd(),
+    ]
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        direct = d / term
+        if direct.exists():
+            return direct
+        try:
+            for item in d.iterdir():
+                if item.name.lower() == term_lower:
+                    return item
+                if term_lower in item.name.lower():
+                    return item
+        except Exception:
+            pass
+    return None
+
+
+def open_file(path: str = "", name: str = "") -> str:
+    target = None
+    if name and path:
+        p = _resolve_path(path) / name
+        if p.exists():
+            target = p
+    if not target and path:
+        p = _resolve_path(path)
+        if p.exists():
+            target = p
+    if not target and name:
+        target = _quick_find(name)
+    if not target and path:
+        target = _quick_find(path)
+
+    if not target or not target.exists():
+        return f"Cannot find '{name or path}' to open, sir."
+
+    system = platform.system()
+    try:
+        if system == "Linux":
+            subprocess.Popen(
+                ["xdg-open", str(target)],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        elif system == "Darwin":
+            subprocess.Popen(
+                ["open", str(target)],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            os.startfile(str(target))
+        return f"Opened '{target.name}', sir."
+    except Exception as e:
+        return f"Could not open '{target.name}': {e}"
+
+
 def get_file_info(path: str, name: str = "") -> str:
     try:
         base   = _resolve_path(path)
@@ -660,7 +733,10 @@ def file_controller(
         player.write_log(f"[file] {action} {name or path}")
 
     try:
-        if action == "list":
+        if action in ("open", "open_file", "launch"):
+            return open_file(path=path, name=name)
+
+        elif action == "list":
             return list_files(path)
 
         elif action == "create_file":
@@ -724,13 +800,13 @@ def file_controller(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "file_controller",
-    "description": "Manages files and folders: list, create, delete, move, copy, rename, read, write, find, disk usage.",
+    "description": "Manages files and folders: open files, list, create, delete, move, copy, rename, read, write, find, disk usage. Use action 'open' to open/view any file or document with its default application.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"
+                "description": "open | list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"
             },
             "path": {
                 "type": "STRING",
@@ -750,7 +826,7 @@ TOOL = {
             },
             "name": {
                 "type": "STRING",
-                "description": "File name to search for"
+                "description": "File name to open, create, delete, or search for"
             },
             "extension": {
                 "type": "STRING",

@@ -451,7 +451,15 @@ def take_screenshot():
     elif _OS == "Darwin":
         pyautogui.hotkey("command", "shift", "3")
     else:
-        for cmd in [["scrot"], ["gnome-screenshot"], ["import", "-window", "root", "screenshot.png"]]:
+        try:
+            from core.desktop_context import get_desktop_context
+            save_path = str(Path.home() / "Desktop" / f"screenshot_{int(time.time())}.png")
+            ctx = get_desktop_context()
+            if ctx.screenshot_screen(save_path):
+                return
+        except Exception:
+            pass
+        for cmd in [["grim"], ["scrot"], ["gnome-screenshot"], ["import", "-window", "root", "screenshot.png"]]:
             if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
                 subprocess.Popen(cmd)
                 return

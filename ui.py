@@ -321,7 +321,10 @@ class _SysMetrics:
         if self._pynvml_ok is not False:
             try:
                 if self._pynvml_h is None:
-                    import pynvml  # type: ignore
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        import pynvml  # type: ignore
                     pynvml.nvmlInit()
                     self._pynvml    = pynvml
                     self._pynvml_h  = pynvml.nvmlDeviceGetHandleByIndex(0)
@@ -365,12 +368,29 @@ class _SysMetrics:
             for name in ["coretemp", "k10temp", "cpu_thermal", "acpitz",
                          "cpu-thermal", "zenpower", "it8688"]:
                 if name in temps and temps[name]:
-                    return temps[name][0].current
+                    for entry in temps[name]:
+                        lbl = (entry.label or "").lower()
+                        if any(k in lbl for k in ("package", "tctl", "die", "cpu")):
+                            return float(entry.current)
+                    return float(temps[name][0].current)
             for entries in temps.values():
                 if entries:
-                    return entries[0].current
+                    return float(entries[0].current)
         except Exception:
             pass
+
+        if _OS == "Linux":
+            try:
+                for p in Path("/sys/class/thermal").glob("thermal_zone*"):
+                    type_file = p / "type"
+                    temp_file = p / "temp"
+                    if type_file.exists() and temp_file.exists():
+                        t_type = type_file.read_text().strip().lower()
+                        if any(k in t_type for k in ("x86_pkg_temp", "cpu", "core", "acpitz")):
+                            val = float(temp_file.read_text().strip())
+                            return val / 1000.0 if val > 1000 else val
+            except Exception:
+                pass
 
         # Windows: wmi module (pure Python COM, zero subprocess). Reuse a single
         # connection — building a fresh wmi.WMI() on every poll spins up a COM
@@ -839,6 +859,152 @@ class HudCanvas(QWidget):
             p.drawText(QRectF(cx - r, cy - fsz, r * 2, fsz * 2),
                        Qt.AlignmentFlag.AlignCenter, name)
 
+    def _paint_deck(self, p: QPainter, cx: float, cy: float, r: float,
+                    W: float = 0.0, H: float = 0.0):
+        """Draw the Companion Deck centerpiece: an interactive cyber-sentinel orb
+        with rotating orbital gimbal rings, audio reactive particle field,
+        and HUD telemetry bracket overlays."""
+        main, acc = self._core_colours()
+        bg = qcol(C.BG)
+        amp = self._amp_disp
+        t = self._core_phase
+        live = (self.speaking or amp > 0.04) and not self.muted
+
+        def blend(col: QColor, a: float) -> QColor:
+            k = max(0.0, min(1.0, a))
+            return QColor(int(bg.red()   + (col.red()   - bg.red())   * k),
+                          int(bg.green() + (col.green() - bg.green()) * k),
+                          int(bg.blue()  + (col.blue()  - bg.blue())  * k))
+
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # 1. Outer Tech Framework & Holographic grid brackets
+        if W > 60 and H > 60:
+            bw, bh = W * 0.46, H * 0.44
+            p.setPen(QPen(blend(main, 0.22), 1.0))
+            arm_x, arm_y = min(W, H) * 0.08, min(W, H) * 0.08
+            for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+                bx = cx + sx * bw
+                by = cy + sy * bh
+                p.drawLine(QLineF(bx, by, bx - sx * arm_x, by))
+                p.drawLine(QLineF(bx, by, bx, by - sy * arm_y))
+
+            tf = QFont("Monospace", max(7, int(min(W, H) * 0.022)))
+            p.setFont(tf)
+            p.setPen(QPen(blend(main, 0.55), 1.0))
+
+            p.drawText(QRectF(cx - bw + 4, cy - bh + 2, 140, 16),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       "COMPANION DECK // ONLINE")
+
+            obs_col = blend(qcol(C.GREEN), 0.8) if not self.muted else blend(main, 0.3)
+            p.setPen(QPen(obs_col, 1.0))
+            p.drawText(QRectF(cx + bw - 144, cy - bh + 2, 140, 16),
+                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       "◉ EYE: OBSERVING" if not self.muted else "○ EYE: IDLE")
+
+            p.setPen(QPen(blend(main, 0.55), 1.0))
+            p.drawText(QRectF(cx - bw + 4, cy + bh - 18, 140, 16),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       "POLICY: SAFE-GUARD")
+
+            p.drawText(QRectF(cx + bw - 144, cy + bh - 18, 140, 16),
+                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       "BIOMETRICS: ACTIVE")
+
+        # 2. Holographic Atmospheric Glow
+        lift = 1.0 + 0.65 * amp + (0.25 if self.speaking else 0.0)
+        p.setPen(Qt.PenStyle.NoPen)
+        for gr, a0 in ((r * 0.72, 0.28), (r * 0.38, 0.35)):
+            g = QRadialGradient(cx, cy, gr)
+            core_col = acc if (live or self.speaking) else main
+            g.setColorAt(0.00, blend(core_col, min(0.95, a0 * lift)))
+            g.setColorAt(0.50, blend(main, min(0.90, a0 * lift * 0.45)))
+            g.setColorAt(1.00, blend(main, 0.0))
+            p.setBrush(QBrush(g))
+            p.drawEllipse(QRectF(cx - gr, cy - gr, gr * 2, gr * 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # 3. Outer Gimbal Ring (Rotates clockwise)
+        angle1 = t * 1.8
+        rx1 = r * 0.78
+        ry1 = rx1 * (0.38 + 0.08 * math.sin(t * 0.8))
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(28.0)
+        p.setPen(QPen(blend(main, 0.45 + 0.35 * amp), 1.5))
+        p.drawEllipse(QRectF(-rx1, -ry1, rx1 * 2, ry1 * 2))
+
+        for i in range(4):
+            th = angle1 + i * (math.pi / 2)
+            nx = rx1 * math.cos(th)
+            ny = ry1 * math.sin(th)
+            p.setBrush(QBrush(blend(acc, 0.85)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(nx, ny), 2.5, 2.5)
+        p.restore()
+
+        # 4. Counter-rotating Gimbal Ring (Rotates counter-clockwise)
+        angle2 = -t * 2.2
+        rx2 = r * 0.64
+        ry2 = rx2 * (0.42 + 0.06 * math.cos(t * 1.1))
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(-38.0)
+        p.setPen(QPen(blend(acc, 0.40 + 0.40 * amp), 1.4))
+        p.drawEllipse(QRectF(-rx2, -ry2, rx2 * 2, ry2 * 2))
+
+        for i in range(3):
+            th = angle2 + i * (2 * math.pi / 3)
+            nx = rx2 * math.cos(th)
+            ny = ry2 * math.sin(th)
+            p.setBrush(QBrush(blend(main, 0.90)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(nx, ny), 2.2, 2.2)
+        p.restore()
+
+        # 5. Audio Waveform Spikes / Resonance Rays
+        num_spikes = 24
+        p.setPen(Qt.PenStyle.SolidLine)
+        spikes = []
+        inner_core_r = r * 0.28
+        for i in range(num_spikes):
+            th = i * (2 * math.pi / num_spikes) + t * 0.3
+            spk_len = (8.0 + 28.0 * amp * math.sin(i * 1.3 + t * 4.0)**2) if live else (4.0 + 3.0 * math.sin(t * 2.0 + i))
+            r_start = inner_core_r + 4
+            r_end = r_start + spk_len
+            x0 = cx + r_start * math.cos(th)
+            y0 = cy + r_start * math.sin(th)
+            x1 = cx + r_end * math.cos(th)
+            y1 = cy + r_end * math.sin(th)
+            spikes.append(QLineF(x0, y0, x1, y1))
+        p.setPen(QPen(blend(acc if live else main, 0.35 + 0.55 * amp), 1.6))
+        p.drawLines(spikes)
+
+        # 6. Central Cybernetic Eye / Core Orb
+        p.setPen(QPen(blend(main, 0.70), 1.8))
+        p.drawEllipse(QRectF(cx - inner_core_r, cy - inner_core_r, inner_core_r * 2, inner_core_r * 2))
+
+        pupil_r = inner_core_r * (0.45 + 0.15 * math.sin(t * 1.5) + 0.25 * amp)
+        p.setPen(QPen(blend(acc, 0.85), 2.0))
+        p.drawEllipse(QRectF(cx - pupil_r, cy - pupil_r, pupil_r * 2, pupil_r * 2))
+
+        p.setBrush(QBrush(blend(qcol(C.WHITE), 0.85 + 0.15 * amp)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), 3.0 + 2.0 * amp, 3.0 + 2.0 * amp)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # 7. Assistant Name Monospace Plate
+        name = self._assistant_name or "JARVIS"
+        if name:
+            fsz = max(8, int(inner_core_r * 0.42))
+            f = QFont("Courier New", fsz, QFont.Weight.Bold)
+            f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+            p.setFont(f)
+            p.setPen(QPen(blend(qcol(C.WHITE), 0.75 + 0.25 * amp), 1))
+            p.drawText(QRectF(cx - r, cy + inner_core_r + 10, r * 2, fsz * 2),
+                       Qt.AlignmentFlag.AlignCenter, f"◈ {name} ◈")
+
     def paintEvent(self, _):
         p = QPainter(self)
         if not p.isActive():      # device not ready (e.g. 0-size during layout) — skip cleanly
@@ -883,10 +1049,14 @@ class HudCanvas(QWidget):
                     _acc = qcol(C.PRI)
             self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
 
-        # reactor core — the other centrepiece, and the fallback if the head
-        # could not be built. There is no third path: the old face.png branch
-        # was unreachable (no such file ships) and the bare orb it fell through
-        # to is what this replaces.
+        # Companion Deck mode: cyber-sentinel orb & live telemetry brackets
+        elif self.hud_style == "deck":
+            _band_t = 12.0
+            _band_h = max(60.0, _sy_status - 12.0 - _band_t)
+            _r = min(W * 0.46, _band_h / 2.0)
+            self._paint_deck(p, cx, _band_t + _band_h / 2.0, _r, W, _band_h)
+
+        # reactor core — fallback / alternate centerpiece
         else:
             _band_t = 12.0
             _band_h = max(60.0, _sy_status - 12.0 - _band_t)
@@ -2958,6 +3128,9 @@ class MainWindow(QMainWindow):
     _quiz_sig       = pyqtSignal(str, object, object)  # (topic, questions, grader)
     _quiz_hide_sig  = pyqtSignal()
     _review_sig     = pyqtSignal(str, str, object, object)  # document review payload
+    _phone_connected_sig = pyqtSignal()
+    _visemes_sig        = pyqtSignal(object, float, float)
+    _audio_level_sig    = pyqtSignal(float)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -3241,6 +3414,9 @@ class MainWindow(QMainWindow):
         self._quiz_sig.connect(self._show_quiz)
         self._quiz_hide_sig.connect(self._hide_quiz)
         self._review_sig.connect(self._show_review)
+        self._phone_connected_sig.connect(self._apply_phone_connected)
+        self._visemes_sig.connect(lambda f, h, a: self.hud.push_visemes(f, h, a))
+        self._audio_level_sig.connect(self.hud.set_audio_level)
         self._cam_stop = threading.Event()
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
@@ -4914,9 +5090,12 @@ class MainWindow(QMainWindow):
             )
             threading.Thread(target=self.on_text_command, args=(msg,), daemon=True).start()
 
-    def notify_phone_connected(self) -> None:
+    def _apply_phone_connected(self) -> None:
         if self._remote_overlay and self._remote_overlay.isVisible():
             self._remote_overlay.mark_connected()
+
+    def notify_phone_connected(self) -> None:
+        self._phone_connected_sig.emit()
 
     def _open_remote(self):
         if not self.on_remote_clicked:
@@ -5139,29 +5318,34 @@ class MainWindow(QMainWindow):
 
     def _refresh_hud_btn(self):
         from memory.config_manager import get_hud_style
-        face = get_hud_style() == "face"
-        # Neither state is "off", so both read as active — this is a choice
-        # between two things, not a switch with a disabled side.
+        style_mode = get_hud_style()
         style = f"""
             QPushButton {{ background: {C.PANEL2}; color: {C.PRI};
                 border: 1px solid {C.BORDER_A}; border-radius: 3px;
                 text-align: left; padding: 0 8px; }}
             QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.BORDER_B}; }}"""
-        self._hud_btn.setText("🧑  HUD: ANIMATED FACE" if face
-                              else "◉  HUD: REACTOR CORE")
+        if style_mode == "face":
+            self._hud_btn.setText("🧑  HUD: ANIMATED FACE")
+            self._hud_btn.setToolTip("Animated avatar head. Tap to switch to Reactor Core.")
+        elif style_mode == "core":
+            self._hud_btn.setText("◉  HUD: REACTOR CORE")
+            self._hud_btn.setToolTip("Reactor core visualizer. Tap to switch to Companion Deck.")
+        else:
+            self._hud_btn.setText("❖  HUD: COMPANION DECK")
+            self._hud_btn.setToolTip("Companion Deck with cyber-sentinel and live telemetry. Tap to switch to Animated Face.")
         self._hud_btn.setStyleSheet(style)
-        self._hud_btn.setToolTip(
-            "An animated head that speaks your words and shows what JARVIS is "
-            "doing. Tap to switch to the reactor core."
-            if face else
-            "A reactor core that turns with the state and moves with your voice. "
-            "Tap to switch to the animated head.")
 
     def _toggle_hud_style(self):
-        """Swap the centrepiece. Both objects stay in memory, so the change is
+        """Swap the centrepiece. All modes stay in memory, so the change is
         instant and switching back costs nothing."""
         from memory.config_manager import get_hud_style, save_hud_style
-        want = "core" if get_hud_style() == "face" else "face"
+        cur = get_hud_style()
+        if cur == "face":
+            want = "core"
+        elif cur == "core":
+            want = "deck"
+        else:
+            want = "face"
         save_hud_style(want)
         try:
             self.hud.hud_style = want
@@ -5169,9 +5353,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._refresh_hud_btn()
-        self._log.append_log(
-            "SYS: HUD switched to the animated face." if want == "face"
-            else "SYS: HUD switched to the reactor core.")
+        labels = {
+            "face": "animated face",
+            "core": "reactor core",
+            "deck": "companion deck"
+        }
+        self._log.append_log(f"SYS: HUD switched to the {labels.get(want, want)}.")
 
     def _toggle_ptt(self):
         from memory.config_manager import (get_push_to_talk_enabled,
@@ -5744,12 +5931,12 @@ class JarvisUI:
         for JARVIS's own speech. `at` is the wall-clock time the batch begins to
         sound, not the time of the call. See HudCanvas.push_visemes()."""
         try:
-            self._win.hud.push_visemes(frames, hop, at)
+            self._win._visemes_sig.emit(frames, hop, at)
         except Exception:
             pass
 
     def notify_phone_connected(self) -> None:
-        self._win.notify_phone_connected()
+        self._win._phone_connected_sig.emit()
 
     def set_state(self, state: str):
         self._win._state_sig.emit(state)

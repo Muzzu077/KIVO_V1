@@ -725,17 +725,28 @@ class _BrowserSession:
         return page.url
 
     async def fill_form(self, fields: dict) -> str:
-        page    = await self._get_page()
+        page = await self._get_page()
         results = []
-        for selector, value in fields.items():
-            try:
-                el = page.locator(selector).first
-                await el.clear()
-                await el.type(str(value), delay=40)
-                results.append(f"✓ {selector}")
-            except Exception as e:
-                results.append(f"✗ {selector}: {e}")
-        return "Form filled: " + ", ".join(results)
+        for selector_or_desc, value in fields.items():
+            val_str = str(value)
+            # If standard CSS selector:
+            if any(selector_or_desc.startswith(c) for c in ("#", ".", "[", "input", "textarea")):
+                try:
+                    el = page.locator(selector_or_desc).first
+                    await el.scroll_into_view_if_needed(timeout=2000)
+                    await el.fill("")
+                    await el.fill(val_str)
+                    results.append(f"✓ {selector_or_desc}")
+                except Exception as e:
+                    results.append(f"✗ {selector_or_desc}: {e}")
+            else:
+                # Use smart_type for natural language field names (e.g. 'username', 'email')
+                res = await self.smart_type(selector_or_desc, val_str, press_enter=False)
+                if "Typed into" in res:
+                    results.append(f"✓ {selector_or_desc}")
+                else:
+                    results.append(f"✗ {selector_or_desc}")
+        return "Form results: " + ", ".join(results)
 
     async def smart_click(self, description: str) -> str:
         page = await self._get_page()
@@ -762,26 +773,80 @@ class _BrowserSession:
                 pass
         return f"Could not find element: '{description}'"
 
-    async def smart_type(self, description: str, text: str) -> str:
+    async def smart_type(self, description: str, text: str, press_enter: bool = False) -> str:
         page = await self._get_page()
-        candidates = [
+        desc_lower = description.lower().strip()
+        locators: list[tuple[str, Any]] = []
+
+        # 1. Semantic intent matching
+        if any(w in desc_lower for w in ("search", "find", "query", "lookup")):
+            locators.extend([
+                ("searchbox", page.get_by_role("searchbox")),
+                ("search input", page.locator("input[type='search'], input[name='q'], input[name='query'], input[name*='search' i], textarea[name*='search' i]")),
+                ("search aria", page.locator("[aria-label*='search' i], [placeholder*='search' i]")),
+            ])
+        elif any(w in desc_lower for w in ("user", "login", "email", "account", "phone")):
+            locators.extend([
+                ("email/user input", page.locator("input[type='email'], input[autocomplete*='user' i], input[name*='user' i], input[name*='login' i], input[id*='user' i]")),
+                ("user label", page.get_by_label(description, exact=False)),
+                ("user placeholder", page.get_by_placeholder(description, exact=False)),
+            ])
+        elif any(w in desc_lower for w in ("pass", "secret", "pin")):
+            locators.extend([
+                ("password input", page.locator("input[type='password'], input[name*='pass' i], input[id*='pass' i]")),
+            ])
+        elif any(w in desc_lower for w in ("chat", "prompt", "message", "comment")):
+            locators.extend([
+                ("chat/prompt textarea", page.locator("textarea[placeholder*='message' i], textarea[placeholder*='chat' i], textarea[placeholder*='prompt' i], div[contenteditable='true']")),
+            ])
+
+        # 2. Standard exact/fuzzy candidates
+        locators.extend([
             ("placeholder", page.get_by_placeholder(description, exact=False)),
             ("label",       page.get_by_label(description, exact=False)),
             ("role",        page.get_by_role("textbox", name=description)),
-            ("searchbox",   page.get_by_role("searchbox")),
             ("combobox",    page.get_by_role("combobox", name=description)),
-        ]
-        for method, loc in candidates:
+            ("id/name/aria attr", page.locator(f"input[name*='{description}' i], input[id*='{description}' i], input[aria-label*='{description}' i], textarea[name*='{description}' i], textarea[id*='{description}' i]")),
+            ("title/alt attr", page.locator(f"[title*='{description}' i], [alt*='{description}' i]")),
+        ])
+
+        # 3. Fallback: if user referenced active/focused input
+        if any(w in desc_lower for w in ("focused", "current", "active", "box", "input")):
+            locators.append(("focused element", page.locator(":focus")))
+
+        for method, loc in locators:
             try:
-                el = loc.first
-                if await el.count() == 0:
+                if await loc.count() == 0:
                     continue
-                await el.clear()
-                await el.type(text, delay=50)
+                el = loc.first
+                if not await el.is_visible():
+                    continue
+                await el.scroll_into_view_if_needed(timeout=2000)
+                await el.click(timeout=2000)
+                await el.fill("")
+                await el.fill(text)
+                if press_enter:
+                    await el.press("Enter")
                 return f"Typed into ({method}): '{description}'"
             except Exception:
                 continue
-        return f"Could not find input: '{description}'"
+
+        # 4. Fallback: single visible input on entire page
+        try:
+            inputs = page.locator("input:visible, textarea:visible")
+            if await inputs.count() == 1:
+                el = inputs.first
+                await el.scroll_into_view_if_needed(timeout=2000)
+                await el.click(timeout=2000)
+                await el.fill("")
+                await el.fill(text)
+                if press_enter:
+                    await el.press("Enter")
+                return f"Typed into single visible input on page: '{description}'"
+        except Exception:
+            pass
+
+        return f"Could not find input field matching: '{description}'"
 
     async def new_tab(self, url: str = "") -> str:
         page = await self._get_page()
@@ -1024,7 +1089,36 @@ def browser_control(
         elif action == "smart_click":
             result = sess.run(sess.smart_click(params.get("description", "")))
         elif action == "smart_type":
-            result = sess.run(sess.smart_type(params.get("description", ""), params.get("text", "")))
+            result = sess.run(sess.smart_type(
+                params.get("description", ""),
+                params.get("text", ""),
+                press_enter=bool(params.get("press_enter", False)),
+            ))
+        elif action in ("type_desktop", "type_active"):
+            text = params.get("text", "")
+            press_enter = bool(params.get("press_enter", False))
+            if not text:
+                result = "No text provided to type."
+            else:
+                try:
+                    import time
+                    from core.desktop_context import get_desktop_context
+                    from core.terminal_control import _type_text, _press_key
+                    ctx = get_desktop_context()
+                    browsers = ctx.find_browser_windows()
+                    if browsers and not browsers[0].is_focused:
+                        ctx.focus_window(browsers[0].window_id)
+                        time.sleep(0.15)
+                    _type_text(text, ctx.session_type)
+                    if press_enter:
+                        _press_key("Return", ctx.session_type)
+                    result = f"Typed into desktop browser: '{text}'"
+                except Exception as e:
+                    result = f"Desktop typing error: {e}"
+        elif action in ("read_page", "page_summary"):
+            txt = sess.run(sess.get_text())
+            url = sess.run(sess.get_url())
+            result = f"URL: {url}\nVisible Page Content:\n{txt[:2500]}"
         elif action == "get_text":
             result = sess.run(sess.get_text())
         elif action == "get_url":
@@ -1041,6 +1135,18 @@ def browser_control(
             result = sess.run(sess.forward())
         elif action == "reload":
             result = sess.run(sess.reload())
+        elif action == "focus":
+            try:
+                from core.desktop_context import get_desktop_context
+                ctx = get_desktop_context()
+                browsers = ctx.find_browser_windows()
+                if browsers:
+                    ctx.focus_window(browsers[0].window_id)
+                    result = f"Focused browser window ({browsers[0].app_id}: \"{browsers[0].title}\")."
+                else:
+                    result = "No browser window found to focus."
+            except Exception as e:
+                result = f"Could not focus browser window: {e}"
         else:
             result = f"Unknown browser action: '{action}'"
 
@@ -1069,7 +1175,7 @@ TOOL = {
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | list_browsers | close | close_all"
+                "description": "go_to | search | click | type | type_desktop | scroll | fill_form | smart_click | smart_type | read_page | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | focus | list_browsers | close | close_all"
             },
             "browser": {
                 "type": "STRING",
@@ -1122,6 +1228,10 @@ TOOL = {
             "clear_first": {
                 "type": "BOOLEAN",
                 "description": "Clear field before typing (default: true)"
+            },
+            "press_enter": {
+                "type": "BOOLEAN",
+                "description": "Press Enter key immediately after typing (default: false)"
             }
         },
         "required": [

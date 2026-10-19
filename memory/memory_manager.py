@@ -1,9 +1,12 @@
+import copy
 import json
+import os
 import re
+import sys
+import tempfile
 from datetime import datetime
 from threading import Lock
 from pathlib import Path
-import sys
 
 
 def get_base_dir() -> Path:
@@ -44,6 +47,11 @@ PROMPT_INDEX_CHARS = 420
 # with forty stored preferences still gets their sister into the prompt.
 PROMPT_MAX_PER_CATEGORY = 6
 
+_cached_memory: dict | None = None
+_cached_mtime: float = 0.0
+MEMORY_BACKUP_PATH = BASE_DIR / "memory" / "long_term.json.bak"
+
+
 def _empty_memory() -> dict:
     return {
         "identity":      {},
@@ -54,21 +62,54 @@ def _empty_memory() -> dict:
         "notes":         {},
     }
 
-def load_memory() -> dict:
-    if not MEMORY_PATH.exists():
-        return _empty_memory()
+
+def load_memory(force_reload: bool = False) -> dict:
+    global _cached_memory, _cached_mtime
     with _lock:
+        if not MEMORY_PATH.exists():
+            if MEMORY_BACKUP_PATH.exists():
+                try:
+                    data = json.loads(MEMORY_BACKUP_PATH.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        _cached_memory = data
+                        _cached_mtime = MEMORY_BACKUP_PATH.stat().st_mtime
+                        return copy.deepcopy(data)
+                except Exception:
+                    pass
+            _cached_memory = _empty_memory()
+            _cached_mtime = 0.0
+            return copy.deepcopy(_cached_memory)
+
         try:
+            mtime = MEMORY_PATH.stat().st_mtime
+            if not force_reload and _cached_memory is not None and mtime == _cached_mtime:
+                return copy.deepcopy(_cached_memory)
+
             data = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 base = _empty_memory()
                 for key in base:
                     if key not in data:
                         data[key] = {}
-                return data
+                _cached_memory = data
+                _cached_mtime = mtime
+                return copy.deepcopy(data)
             return _empty_memory()
         except Exception as e:
             print(f"[Memory] ⚠️ Load error: {e}")
+            # Try recovering from backup if primary failed or corrupted
+            if MEMORY_BACKUP_PATH.exists():
+                try:
+                    data = json.loads(MEMORY_BACKUP_PATH.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        print("[Memory] 🔄 Successfully recovered memory from backup!")
+                        _cached_memory = data
+                        _cached_mtime = MEMORY_BACKUP_PATH.stat().st_mtime
+                        return copy.deepcopy(data)
+                except Exception:
+                    pass
+            if _cached_memory is not None:
+                return copy.deepcopy(_cached_memory)
             return _empty_memory()
 
 def _all_entries(memory: dict) -> list[tuple]:
@@ -116,15 +157,40 @@ def _trim_to_limit(memory: dict) -> dict:
     return memory
 
 def save_memory(memory: dict) -> None:
+    global _cached_memory, _cached_mtime
     if not isinstance(memory, dict):
         return
-    memory = _trim_to_limit(memory)
-    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
-        MEMORY_PATH.write_text(
-            json.dumps(memory, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        memory = _trim_to_limit(memory)
+        MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(memory, indent=2, ensure_ascii=False)
+
+        # Atomic write via temporary file
+        temp_file = None
+        try:
+            with tempfile.NamedTemporaryFile("w", dir=MEMORY_PATH.parent, delete=False, encoding="utf-8") as tf:
+                tf.write(payload)
+                tf.flush()
+                os.fsync(tf.fileno())
+                temp_file = tf.name
+
+            # Keep a backup before replacing
+            if MEMORY_PATH.exists():
+                try:
+                    MEMORY_PATH.replace(MEMORY_BACKUP_PATH)
+                except Exception:
+                    pass
+
+            os.replace(temp_file, MEMORY_PATH)
+            _cached_memory = copy.deepcopy(memory)
+            _cached_mtime = MEMORY_PATH.stat().st_mtime
+        except Exception as e:
+            print(f"[Memory] ❌ Atomic save error: {e}")
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
 
 
 def _truncate_value(val: str) -> str:

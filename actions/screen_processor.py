@@ -86,6 +86,26 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
 
 
 def _capture_screen() -> tuple[bytes, str]:
+    try:
+        from core.screen_observer import get_screen_observer
+        obs = get_screen_observer()
+        if obs.is_active():
+            img_b, mime_t = obs.get_latest_frame()
+            if img_b:
+                return img_b, mime_t
+    except Exception:
+        pass
+
+    # Wayland / Linux: prefer grim if available (mss produces black screen on niri/Wayland)
+    import shutil
+    import subprocess
+    if shutil.which("grim") and (os_env := sys.platform.startswith("linux")):
+        try:
+            r = subprocess.run(["grim", "-"], capture_output=True, timeout=4.0)
+            if r.returncode == 0 and r.stdout:
+                return _compress(r.stdout, "PNG")
+        except Exception as e:
+            print(f"[Vision] grim capture failed: {e}")
 
     if not _MSS:
         raise RuntimeError("mss is not installed. Run: pip install mss")

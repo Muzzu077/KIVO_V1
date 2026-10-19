@@ -98,9 +98,18 @@ def _has_error(output: str) -> bool:
 
 
 def _take_screenshot() -> Path | None:
+    screenshot_path = Path.home() / "Desktop" / f"jarvis_debug_{int(time.time())}.png"
+    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from core.desktop_context import get_desktop_context
+        ctx = get_desktop_context()
+        if ctx.screenshot_screen(str(screenshot_path)):
+            print(f"[Code] 📸 Screenshot: {screenshot_path}")
+            return screenshot_path
+    except Exception:
+        pass
     try:
         import pyautogui
-        screenshot_path = Path.home() / "Desktop" / f"jarvis_debug_{int(time.time())}.png"
         screenshot = pyautogui.screenshot()
         screenshot.save(str(screenshot_path))
         print(f"[Code] 📸 Screenshot: {screenshot_path}")
@@ -374,11 +383,45 @@ Explanation:"""
         return f"Could not explain code: {e}"
 
 
+def _run_command_action(cmd_str: str, cwd: str = "", timeout: int = 30, player=None) -> str:
+    if not cmd_str:
+        return "Please provide a command to execute, sir."
+    work_dir = None
+    if cwd:
+        p = Path(cwd).expanduser().resolve()
+        if p.exists() and p.is_dir():
+            work_dir = str(p)
+    if player:
+        player.write_log(f"[Code] Executing: {cmd_str}")
+    try:
+        res = subprocess.run(
+            cmd_str,
+            shell=True,
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout or 30,
+        )
+        out = (res.stdout or "").strip()
+        err = (res.stderr or "").strip()
+        result = out
+        if err:
+            result = f"{result}\nError: {err}".strip() if result else f"Error: {err}"
+        return result or "Command completed with no output, sir."
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after {timeout} seconds, sir."
+    except Exception as e:
+        return f"Command failed: {e}"
+
+
 def _run_action(file_path, args, timeout, player) -> str:
     if not file_path:
         return "Please provide a file path to run, sir."
     p = Path(file_path)
     if not p.exists():
+        # Fallback: if it's a command string, execute it directly
+        if " " in file_path or any(c in file_path for c in ("|", "&", ";", ">", "<", "$")):
+            return _run_command_action(file_path, "", timeout, player)
         return f"File not found: {file_path}"
     if player:
         player.write_log(f"[Code] Running {p.name}...")
@@ -572,6 +615,10 @@ def code_helper(
     elif action == "run":
         return _run_action(file_path, args, timeout, player)
 
+    elif action in ("terminal", "command", "bash", "execute", "shell"):
+        cmd_to_run = description or code or (args if isinstance(args, str) else " ".join(args)) or file_path
+        return _run_command_action(cmd_to_run, cwd=output_path or file_path, timeout=timeout, player=player)
+
     elif action == "build":
         return _build(description, language, output_path, args, timeout, speak, player)
 
@@ -588,17 +635,17 @@ def code_helper(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "code_helper",
-    "description": "Writes, edits, explains, runs, or builds code files.",
+    "description": "Writes, edits, explains, runs, or builds code files, or executes shell/terminal commands in the background. Use action 'terminal' to run bash commands and get their output.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "write | edit | explain | run | build | auto (default: auto)"
+                "description": "write | edit | explain | run | build | terminal | auto (default: auto)"
             },
             "description": {
                 "type": "STRING",
-                "description": "What the code should do or what change to make"
+                "description": "What the code should do / shell command to execute"
             },
             "language": {
                 "type": "STRING",
@@ -606,7 +653,7 @@ TOOL = {
             },
             "output_path": {
                 "type": "STRING",
-                "description": "Where to save the file"
+                "description": "Where to save the file or working directory for terminal command"
             },
             "file_path": {
                 "type": "STRING",

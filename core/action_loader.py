@@ -29,6 +29,7 @@ import importlib.util
 import inspect
 import re
 import sys
+import time as _time_module
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,12 +101,60 @@ class ActionRegistry:
         rec = self._actions.get(name)
         if rec is None or not rec.valid:
             return f"Action '{name}' is not available."
+
+        # ── Policy check ──────────────────────────────────────────────
+        start_time = _time_module.monotonic()
         try:
-            return _call_handler(rec.handler, parameters, ctx or {}) or "Done."
+            from core.action_policy import (
+                check as policy_check,
+                record_execution,
+                _extract_action,
+                Control,
+            )
+            action_verb = _extract_action(name, parameters)
+            risk, control, denial = policy_check(name, action_verb, parameters)
+
+            if denial:
+                return denial
+
+            if control == Control.CONFIRM:
+                # Delegate to core/confirm.py — the tool handler itself may
+                # already do this (computer_settings does), so we set a flag
+                # the handler can check to avoid double-gating.
+                parameters["_policy_requires_confirm"] = True
+        except ImportError:
+            # action_policy not available yet — run ungated
+            risk = control = action_verb = None
+        # ──────────────────────────────────────────────────────────────
+
+        try:
+            result = _call_handler(rec.handler, parameters, ctx or {}) or "Done."
         except Exception as e:
             self._logger(f"Action '{name}' crashed during run(): {e}")
             traceback.print_exc()
-            return f"Tool '{name}' failed: {e}"
+            result = f"Tool '{name}' failed: {e}"
+            outcome = "error"
+        else:
+            outcome = "executed"
+
+        # ── Audit ─────────────────────────────────────────────────────
+        if risk is not None:
+            try:
+                record_execution(
+                    tool=name,
+                    action=action_verb,
+                    parameters=parameters,
+                    risk=risk,
+                    control=control,
+                    outcome=outcome,
+                    result=result,
+                    duration=_time_module.monotonic() - start_time,
+                )
+            except Exception:
+                pass
+        # ──────────────────────────────────────────────────────────────
+
+        return result
 
 
 def _call_handler(fn: Callable, parameters: dict, ctx: dict) -> str:

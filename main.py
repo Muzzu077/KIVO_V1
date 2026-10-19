@@ -89,6 +89,10 @@ from core.wake_word            import (
 # again (wake-word mode only).
 WAKE_SLEEP_TIMEOUT = 120.0   # seconds (2 minutes)
 
+# Process-wide lock to serialize PortAudio / PipeWire ALSA PCM stream opens/closes
+# preventing concurrent snd_pcm_close() corruption and SIGABRT during task cancellation.
+_AUDIO_DEVICE_LOCK = threading.Lock()
+
 def get_base_dir():
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -265,9 +269,8 @@ def _describe_limits(has_vision: bool, has_mic: bool) -> str:
     ]
     if has_vision:
         out.append(
-            "- Your sight is not continuous. You see nothing until you call a "
-            "vision tool, and then only that single frame at that moment — you "
-            "cannot watch, monitor or notice something changing on screen.")
+            "- You have full desktop and screen awareness via desktop_context and screen_process. "
+            "You continuously monitor active windows and can capture or read text from the screen at any moment.")
     else:
         out.append("- You have no sight at all in this build.")
     if has_mic:
@@ -291,8 +294,37 @@ def _render_prompt(template: str, values: dict) -> str:
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            provider = str(data.get("llm_provider", "")).lower()
+            if provider == "openrouter":
+                return data.get("openrouter_api_key") or data.get("gemini_api_key", "")
+            return data.get("gemini_api_key") or data.get("openrouter_api_key", "")
+    except Exception:
+        return ""
+
+
+def _get_llm_model() -> str:
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("llm_model", "nvidia/nemotron-3-ultra-550b-a55b:free")
+    except Exception:
+        return "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+def _is_openrouter_key(key: str) -> bool:
+    if key.startswith("sk-or-"):
+        return True
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if str(data.get("llm_provider", "")).lower() == "gemini":
+                return False
+            return str(data.get("llm_provider", "")).lower() == "openrouter"
+    except Exception:
+        return False
 
 
 def _load_system_prompt() -> str:
@@ -338,9 +370,12 @@ TOOL_DECLARATIONS = [
     {
         "name": "system_status",
         "description": (
-            "Returns real-time system metrics: CPU usage, RAM, GPU load, CPU temperature, "
-            "uptime, and process count. Use when the user asks about computer performance, "
-            "temperature, memory, or resource usage."
+            "Returns complete real-time system hardware telemetry and sensor readouts: "
+            "CPU usage and temperature, GPU usage, temperature, and memory, "
+            "laptop chassis and thermal zone temperatures (Acer/ACPI/NVMe), "
+            "fan speeds (RPM), battery status, RAM usage, uptime, and process count. "
+            "Use whenever the user asks about temperatures (CPU, GPU, laptop, device), "
+            "performance, fan speed, battery, or hardware resource usage."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -621,6 +656,11 @@ class JarvisLive:
             reserved_names=_inline_names,
             logger=lambda msg: print(f"[Actions] {msg}"),
         )
+        try:
+            from core.task_orchestrator import get_task_orchestrator
+            get_task_orchestrator().bind_registry(self._action_registry)
+        except Exception as e:
+            print(f"[Orchestrator] Could not bind action registry: {e}")
 
         # Plugins must not collide with either an inline tool or a discovered action.
         _core_names = _inline_names | self._action_registry.names()
@@ -1185,7 +1225,10 @@ class JarvisLive:
                         print(f"[Vision] 📷 Camera: {len(img_b):,} bytes")
                         _stall = "camera"
                     else:
-                        img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                        from core.screen_observer import get_screen_observer
+                        img_b, mime_t = get_screen_observer().get_latest_frame()
+                        if not img_b:
+                            img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
                         print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                         _stall = "screen"
                     self._pending_vision = (img_b, mime_t, user_text, angle)
@@ -1225,6 +1268,11 @@ class JarvisLive:
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
                 async def _do_shutdown():
+                    try:
+                        from core.screen_observer import get_screen_observer
+                        get_screen_observer().stop()
+                    except Exception:
+                        pass
                     await self._save_session_summary()
                     if self.session:
                         try:
@@ -1418,10 +1466,23 @@ class JarvisLive:
                 )
                 _mic_stream = _open_mic(None)
 
-            with _mic_stream:
+            def _safe_close_mic():
+                with _AUDIO_DEVICE_LOCK:
+                    try:
+                        if _mic_stream and not _mic_stream.closed:
+                            _mic_stream.stop()
+                            _mic_stream.close()
+                    except Exception:
+                        pass
+
+            try:
+                with _AUDIO_DEVICE_LOCK:
+                    _mic_stream.start()
                 print("[JARVIS] 🎤 Mic stream open")
                 while True:
                     await asyncio.sleep(0.1)
+            finally:
+                await asyncio.to_thread(_safe_close_mic)
         except Exception as e:
             print(f"[JARVIS] ❌ Mic: {e}")
             raise
@@ -1607,15 +1668,33 @@ class JarvisLive:
             print(f"[JARVIS] 🔊 Output device: {_spk_name}")
 
         def _open_spk(dev):
-            st = sd.RawOutputStream(
-                samplerate=RECEIVE_SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-                device=dev,
-            )
-            st.start()
-            return st
+            with _AUDIO_DEVICE_LOCK:
+                st = sd.RawOutputStream(
+                    samplerate=RECEIVE_SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype="int16",
+                    blocksize=CHUNK_SIZE,
+                    device=dev,
+                )
+                st.start()
+                return st
+
+        _play_lock = threading.Lock()
+
+        def _safe_write(data: bytes) -> None:
+            with _play_lock:
+                if stream and not stream.closed:
+                    stream.write(data)
+
+        def _safe_close_spk() -> None:
+            with _play_lock:
+                with _AUDIO_DEVICE_LOCK:
+                    try:
+                        if stream and not stream.closed:
+                            stream.stop()
+                            stream.close()
+                    except Exception:
+                        pass
 
         try:
             stream = _open_spk(_spk_dev)
@@ -1722,7 +1801,7 @@ class JarvisLive:
                     pass
 
                 try:
-                    await asyncio.to_thread(stream.write, bytes(batch))
+                    await asyncio.to_thread(_safe_write, bytes(batch))
                 except (RuntimeError, asyncio.CancelledError):
                     break   # executor shutting down — exit cleanly
         except Exception as e:
@@ -1730,8 +1809,7 @@ class JarvisLive:
             raise
         finally:
             self.set_speaking(False)
-            stream.stop()
-            stream.close()
+            await asyncio.to_thread(_safe_close_spk)
 
     # ── Morning briefing ────────────────────────────────────────────────────────
 
@@ -1958,12 +2036,16 @@ class JarvisLive:
 
     async def _run_proactive_mode(self) -> None:
         """
-        Background task: periodically checks if the user has been silent long enough,
-        then hands time + memory context to Gemini so it can decide what (if anything)
-        to say proactively. No hardcoded rules — Gemini makes the call.
+        Background task: checks for pending real-time events (screen errors,
+        terminal failures, project changes) from ProactiveHub, and periodically
+        evaluates time + memory context for idle check-ins.
         """
+        from core.proactive_hub import get_proactive_hub
+        hub = get_proactive_hub()
+        hub.start_hooks()
+
         while True:
-            await asyncio.sleep(60)   # evaluate once per minute
+            await asyncio.sleep(4)   # evaluate event queue every 4 seconds
 
             if not self.session or not self._awake:
                 continue
@@ -1973,6 +2055,28 @@ class JarvisLive:
             if speaking:
                 continue
 
+            # Don't speak if user was talking very recently (< 4s ago)
+            if (time.monotonic() - self._last_user_speech) < 4.0:
+                continue
+
+            # 1. First priority: Check event-driven proactive triggers (errors, terminal, etc.)
+            event = hub.pop_next_event()
+            if event:
+                try:
+                    memory = await asyncio.to_thread(load_memory)
+                    recent_turns = self._session_log[-6:] if self._session_log else []
+                    prompt = hub.build_event_prompt(event, memory=memory, recent_turns=recent_turns)
+                    await self.session.send_client_content(
+                        turns={"role": "user", "parts": [{"text": prompt}]},
+                        turn_complete=True,
+                    )
+                    print(f"[JARVIS] ⚡ Proactive event dispatched: {event.title}")
+                    self.ui.write_log(f"SYS: Proactive assistance triggered ({event.title})")
+                    continue
+                except Exception as e:
+                    print(f"[ProactiveHub] ⚠️ Event dispatch error: {e}")
+
+            # 2. Second priority: Standard idle silence check-in
             if not self._proactive.should_trigger(self._last_user_speech):
                 continue
 
@@ -1991,7 +2095,7 @@ class JarvisLive:
                     turns={"role": "user", "parts": [{"text": prompt}]},
                     turn_complete=True,
                 )
-                print("[JARVIS] Proactive check-in.")
+                print("[JARVIS] Proactive idle check-in.")
             except Exception as e:
                 print(f"[Proactive] ⚠️ {e}")
 
@@ -2079,6 +2183,15 @@ class JarvisLive:
         # for host-API enumeration on the Qt thread.
         audio_devices.prefetch()
 
+        # Start continuous background screen monitoring & ambient proactive hub
+        try:
+            from core.screen_observer import get_screen_observer
+            get_screen_observer().start()
+            from core.proactive_hub import get_proactive_hub
+            get_proactive_hub().start_hooks()
+        except Exception as e:
+            print(f"[ScreenObserver/ProactiveHub] Could not start: {e}")
+
         # Start dashboard (optional — needs: pip install fastapi "uvicorn[standard]" cryptography)
         try:
             from dashboard.server import DashboardServer
@@ -2109,13 +2222,29 @@ class JarvisLive:
                 # Fresh client on every reconnect — avoids stale HTTP session state
                 # v1alpha carries proactive audio; if it gets rejected we fall
                 # back to v1beta.
-                client = genai.Client(
-                    api_key=_get_api_key(),
-                    http_options={"api_version": "v1alpha" if self._enhanced_live else "v1beta"}
-                )
+                key = _get_api_key()
+                if _is_openrouter_key(key):
+                    from core.openrouter_live import OpenRouterLiveSession
+                    _all_decls = (TOOL_DECLARATIONS
+                                  + self._action_registry.get_tool_declarations()
+                                  + self._plugin_registry.get_tool_declarations())
+                    _sys_prompt = _load_system_prompt()
+                    _connect_cm = OpenRouterLiveSession(
+                        api_key=key,
+                        model=_get_llm_model(),
+                        system_prompt=_sys_prompt,
+                        tools=_all_decls,
+                        voice=get_voice(),
+                    )
+                else:
+                    client = genai.Client(
+                        api_key=key,
+                        http_options={"api_version": "v1alpha" if self._enhanced_live else "v1beta"}
+                    )
+                    _connect_cm = client.aio.live.connect(model=live_model, config=config)
 
                 async with (
-                    client.aio.live.connect(model=live_model, config=config) as session,
+                    _connect_cm as session,
                     asyncio.TaskGroup() as tg,
                 ):
                     self.session          = session
@@ -2213,6 +2342,16 @@ class JarvisLive:
                     continue
 
                 err_str = str(e)
+
+                # Gemini Live session duration reached / GoAway rollover:
+                # The server routinely terminates sessions after its max duration (~10-15m).
+                # This is normal API lifecycle, not a crash or network error.
+                if "1008" in err_str or "goaway" in err_str.lower() or "session durat" in err_str.lower():
+                    print("[JARVIS] 🔄 Session duration reached (GoAway) — refreshing connection seamlessly")
+                    self.ui.write_log("SYS: Live session refreshed — resuming conversation...")
+                    self._conn_backoff = 0
+                    continue
+
                 print(f"[JARVIS] Error ({type(e).__name__}): {e}")
                 traceback.print_exc()
 
