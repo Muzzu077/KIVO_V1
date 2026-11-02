@@ -57,6 +57,8 @@ class TaskPlan:
     is_finished: bool = False
     success: bool = False
     summary: str = ""
+    workspace_id: str = ""
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 class TaskOrchestrator:
@@ -86,7 +88,8 @@ class TaskOrchestrator:
         """cb(task_id, current_step, total_steps, message)"""
         self._progress_callback = cb
 
-    def create_plan(self, goal: str, steps_data: list[dict]) -> TaskPlan:
+    def create_plan(self, goal: str, steps_data: list[dict],
+                    workspace_id: str = "") -> TaskPlan:
         """Create a plan from a list of step specifications."""
         task_id = f"task_{int(time.time() * 1000)}"
         steps = []
@@ -108,7 +111,8 @@ class TaskOrchestrator:
                 is_critical=is_crit,
             ))
 
-        plan = TaskPlan(task_id=task_id, goal=goal, steps=steps)
+        plan = TaskPlan(task_id=task_id, goal=goal, steps=steps,
+                        workspace_id=workspace_id)
         with self._lock:
             self._active_tasks[task_id] = plan
         return plan
@@ -124,14 +128,40 @@ class TaskOrchestrator:
             plan.success = False
             return plan
 
+        # Tell the Drive session that sustained work is happening. The UI can
+        # show this, and both the voice path and the on-screen button can call
+        # drive.stop() to set the cancel_event.
+        from core.drive import get_drive_session
+        drive = get_drive_session()
+        drive.start(plan.goal)
+
         total = len(plan.steps)
         completed_count = 0
         executed_steps_for_rollback = []
 
+        try:
+            return self._run_steps(plan, context, total, completed_count,
+                                   executed_steps_for_rollback, drive)
+        finally:
+            drive.stop("finished" if plan.success else (plan.summary or "ended"))
+
+    def _run_steps(self, plan, context, total, completed_count,
+                   executed_steps_for_rollback, drive):
+        """Inner loop split out so the Drive session always stops in finally."""
+
         for idx, step in enumerate(plan.steps):
+            if plan.cancel_event.is_set():
+                for rem_idx in range(idx, total):
+                    plan.steps[rem_idx].status = StepStatus.SKIPPED
+                plan.is_finished = True
+                plan.success = False
+                plan.summary = f"Task cancelled before step {idx + 1}."
+                return plan
+
             plan.current_step_index = idx + 1
             step.status = StepStatus.RUNNING
             step.started_at = time.monotonic()
+            drive.update(step.description, plan.goal)
 
             if self._progress_callback:
                 try:
@@ -197,6 +227,20 @@ class TaskOrchestrator:
     def get_task(self, task_id: str) -> Optional[TaskPlan]:
         with self._lock:
             return self._active_tasks.get(task_id)
+
+    def cancel_active(self) -> str:
+        """Cancel every running plan. Called when the user says 'stop'."""
+        with self._lock:
+            active = [p for p in self._active_tasks.values()
+                      if not p.is_finished]
+        if not active:
+            return "No active tasks to cancel."
+        for plan in active:
+            plan.cancel_event.set()
+        from core.drive import get_drive_session
+        get_drive_session().stop("cancelled by user")
+        names = ", ".join(p.goal[:40] for p in active)
+        return f"Cancelling: {names}"
 
 
 def get_task_orchestrator() -> TaskOrchestrator:

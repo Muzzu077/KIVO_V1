@@ -880,7 +880,7 @@ def computer_settings(
     # write its own permission slip, and the action itself is handed to the UI
     # rather than performed here — so returning early is not "declining", it is
     # "parked until someone says yes".
-    if action in _IRREVERSIBLE:
+    if action in _IRREVERSIBLE and not params.get("_policy_confirmed"):
         title, detail = _IRREVERSIBLE[action]
         func = ACTION_MAP.get(action)
         if func is None:

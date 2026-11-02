@@ -240,6 +240,107 @@ _policy_lock = threading.RLock()
 _overrides: dict[tuple[str, str], tuple[Risk, Control]] = {}
 _trust_session: bool = False
 
+# ── Scoped grants ──────────────────────────────────────────────────────────
+#
+# A "grant" is a narrow, revocable loosening. Unlike trust_session (which opens
+# everything) and unlike an override (which is permanent until cleared), a
+# grant expires after `max_uses` invocations or `ttl_seconds`, whichever comes
+# first. This is what the permission service issues when the user says "go
+# ahead and delete files for the next five minutes".
+
+@dataclass
+class _Grant:
+    tool: str
+    action: str
+    control: Control
+    remaining: int          # max_uses; -1 = unlimited until ttl
+    expires_at: float       # monotonic; 0 = no expiry
+
+_grants: dict[tuple[str, str], _Grant] = {}
+_grants_lock = threading.Lock()
+
+
+def grant(
+    tool: str,
+    control: Control = Control.LOG,
+    action: str = "*",
+    *,
+    max_uses: int = 1,
+    ttl_seconds: float = 300.0,
+) -> str:
+    """Issue a scoped, revocable permission.
+
+    Returns a human-readable confirmation for the UI.
+    """
+    now = time.monotonic()
+    expires = (now + ttl_seconds) if ttl_seconds > 0 else 0.0
+    with _grants_lock:
+        _grants[(tool, action)] = _Grant(
+            tool=tool, action=action, control=control,
+            remaining=max_uses, expires_at=expires,
+        )
+    desc = f"{tool}:{action}"
+    parts = []
+    if max_uses > 0:
+        parts.append(f"{max_uses} use{'s' if max_uses != 1 else ''}")
+    if ttl_seconds > 0:
+        parts.append(f"{int(ttl_seconds)}s")
+    return f"Granted {desc} → {control.name} ({', '.join(parts)})"
+
+
+def revoke(tool: str, action: str = "*") -> bool:
+    with _grants_lock:
+        return _grants.pop((tool, action), None) is not None
+
+
+def revoke_all() -> int:
+    with _grants_lock:
+        n = len(_grants)
+        _grants.clear()
+    return n
+
+
+def list_grants() -> list[dict]:
+    now = time.monotonic()
+    with _grants_lock:
+        return [
+            {
+                "tool": g.tool,
+                "action": g.action,
+                "control": g.control.name,
+                "remaining": g.remaining,
+                "expires_in": max(0, g.expires_at - now) if g.expires_at else None,
+            }
+            for g in _grants.values()
+            if (g.expires_at == 0 or g.expires_at > now) and g.remaining != 0
+        ]
+
+
+def _consume_grant(tool: str, action: str) -> tuple[Risk, Control] | None:
+    """If a grant applies, consume one use and return its (risk, control).
+
+    Expired or exhausted grants are cleaned up lazily.
+    """
+    now = time.monotonic()
+    with _grants_lock:
+        for key in ((tool, action), (tool, "*")):
+            g = _grants.get(key)
+            if g is None:
+                continue
+            if g.expires_at and g.expires_at < now:
+                del _grants[key]
+                continue
+            if g.remaining == 0:
+                del _grants[key]
+                continue
+            # Valid grant — consume it.
+            if g.remaining > 0:
+                g.remaining -= 1
+            # Look up the base risk so the audit log is consistent.
+            base_risk = _POLICY.get((tool, action), _POLICY.get((tool, "*"), _DEFAULT_POLICY))[0]
+            return base_risk, g.control
+    return None
+
 
 def override(
     tool: str,
@@ -283,9 +384,10 @@ def lookup(tool: str, action: str = "*") -> tuple[Risk, Control]:
     Resolution order:
       1. Explicit override for (tool, action)
       2. Explicit override for (tool, "*")
-      3. Static policy for (tool, action)
-      4. Static policy for (tool, "*")
-      5. _DEFAULT_POLICY
+      3. Scoped grant for (tool, action) or (tool, "*")
+      4. Static policy for (tool, action)
+      5. Static policy for (tool, "*")
+      6. _DEFAULT_POLICY
     """
     with _policy_lock:
         # 1. Exact override
@@ -295,17 +397,22 @@ def lookup(tool: str, action: str = "*") -> tuple[Risk, Control]:
         if (tool, "*") in _overrides:
             return _overrides[(tool, "*")]
 
-    # 3. Exact static policy
+    # 3. Scoped grant (consumed on use)
+    granted = _consume_grant(tool, action)
+    if granted is not None:
+        return granted
+
+    # 4. Exact static policy
     entry = _POLICY.get((tool, action))
     if entry:
         risk, ctrl = entry
         return _maybe_trust(risk, ctrl)
-    # 4. Wildcard static policy
+    # 5. Wildcard static policy
     entry = _POLICY.get((tool, "*"))
     if entry:
         risk, ctrl = entry
         return _maybe_trust(risk, ctrl)
-    # 5. Default
+    # 6. Default
     risk, ctrl = _DEFAULT_POLICY
     return _maybe_trust(risk, ctrl)
 
@@ -392,6 +499,8 @@ def describe_policy(tool: str | None = None) -> str:
     lines = ["Action Safety Policy:"]
     lines.append(f"  Trust session: {'ON (relaxed)' if _trust_session else 'OFF (normal)'}")
     lines.append(f"  Override count: {len(_overrides)}")
+    active_grants = list_grants()
+    lines.append(f"  Active grants: {len(active_grants)}")
     lines.append("")
 
     entries = _POLICY
@@ -408,5 +517,13 @@ def describe_policy(tool: str | None = None) -> str:
             _, oc = _overrides[(t, a)]
             override_marker = f"  (overridden → {oc.name})"
         lines.append(f"    {a:25s} {risk.name:10s} {ctrl.name}{override_marker}")
+
+    if active_grants:
+        lines.append("")
+        lines.append("  Active grants:")
+        for g in active_grants:
+            exp = f"{g['expires_in']:.0f}s left" if g['expires_in'] is not None else "no expiry"
+            lines.append(f"    {g['tool']}:{g['action']} → {g['control']} "
+                        f"({g['remaining']} uses, {exp})")
 
     return "\n".join(lines)

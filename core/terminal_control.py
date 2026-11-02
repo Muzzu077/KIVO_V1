@@ -134,6 +134,31 @@ def _is_shell_idle(shell_pid: int) -> tuple[bool, str]:
 _WAYLAND_TYPER: str | None = None
 _X11_TYPER: str | None = None
 
+# dotool uses Linux input-event key names, not X11 keysyms.
+_DOTOOL_KEYS = {
+    "Return": "enter",
+    "Enter": "enter",
+    "Escape": "esc",
+    "Esc": "esc",
+    "Tab": "tab",
+    "BackSpace": "backspace",
+    "Backspace": "backspace",
+    "Delete": "delete",
+    "space": "space",
+    "Up": "up",
+    "Down": "down",
+    "Left": "left",
+    "Right": "right",
+    "Home": "home",
+    "End": "end",
+    "Page_Up": "pageup",
+    "Page_Down": "pagedown",
+    "ctrl+c": "ctrl+c",
+    "ctrl+d": "ctrl+d",
+    "ctrl+l": "ctrl+l",
+    "ctrl+u": "ctrl+u",
+}
+
 
 def _detect_typer() -> None:
     global _WAYLAND_TYPER, _X11_TYPER
@@ -145,43 +170,61 @@ def _detect_typer() -> None:
         _X11_TYPER = "xdotool"
 
 
+def _run_typer(argv: list[str], timeout: float, stdin_text: str | None = None) -> bool:
+    """Run an input-injection helper and report whether it actually succeeded.
+
+    Exit status is the only signal we have. Reporting True without checking it
+    is how the assistant ended up claiming it had typed text that never landed.
+    """
+    try:
+        proc = subprocess.run(
+            argv,
+            input=stdin_text,
+            text=stdin_text is not None,
+            timeout=timeout,
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        err = (proc.stderr or b"")
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        if err.strip():
+            print(f"[TerminalControl] {argv[0]} failed: {err.strip()[:200]}")
+        return False
+    return True
+
+
 _detect_typer()
 
 
 def _type_text(text: str, session_type: SessionType) -> bool:
-    """Type text into the currently focused window."""
+    """Type text into the currently focused window. Returns success."""
     if session_type == SessionType.WAYLAND:
         if _WAYLAND_TYPER == "wtype":
-            try:
-                subprocess.run(
-                    ["wtype", "--", text],
-                    timeout=5, capture_output=True,
-                )
+            if _run_typer(["wtype", "--", text], 5):
                 return True
-            except Exception:
-                pass
         elif _WAYLAND_TYPER == "ydotool":
-            try:
-                subprocess.run(
-                    ["ydotool", "type", "--", text],
-                    timeout=5, capture_output=True,
-                )
+            if _run_typer(["ydotool", "type", "--", text], 5):
                 return True
-            except Exception:
-                pass
+        elif _WAYLAND_TYPER == "dotool":
+            # dotool reads commands from stdin. Newlines would be interpreted
+            # as separate commands, so type the text line by line.
+            lines = text.split("\n")
+            for index, line in enumerate(lines):
+                if line and not _run_typer(["dotool"], 5, f"type {line}"):
+                    return False
+                if index != len(lines) - 1 and not _run_typer(["dotool"], 5, "key enter"):
+                    return False
+            return True
 
     if _X11_TYPER == "xdotool" and (
         session_type == SessionType.X11
         or os.environ.get("DISPLAY")
     ):
-        try:
-            subprocess.run(
-                ["xdotool", "type", "--clearmodifiers", "--", text],
-                timeout=5, capture_output=True,
-            )
+        if _run_typer(["xdotool", "type", "--clearmodifiers", "--", text], 5):
             return True
-        except Exception:
-            pass
 
     return False
 
@@ -189,27 +232,22 @@ def _type_text(text: str, session_type: SessionType) -> bool:
 def _press_key(key: str, session_type: SessionType) -> bool:
     """Press a key (e.g., 'Return', 'Escape') on the currently focused window."""
     if session_type == SessionType.WAYLAND and _WAYLAND_TYPER == "wtype":
-        try:
-            subprocess.run(
-                ["wtype", "-k", key],
-                timeout=3, capture_output=True,
-            )
+        if _run_typer(["wtype", "-k", key], 3):
             return True
-        except Exception:
-            pass
+    elif session_type == SessionType.WAYLAND and _WAYLAND_TYPER == "ydotool":
+        if _run_typer(["ydotool", "key", key], 3):
+            return True
+    elif session_type == SessionType.WAYLAND and _WAYLAND_TYPER == "dotool":
+        mapped = _DOTOOL_KEYS.get(key, key.lower())
+        if _run_typer(["dotool"], 3, f"key {mapped}"):
+            return True
 
     if _X11_TYPER == "xdotool" and (
         session_type == SessionType.X11
         or os.environ.get("DISPLAY")
     ):
-        try:
-            subprocess.run(
-                ["xdotool", "key", "--clearmodifiers", key],
-                timeout=3, capture_output=True,
-            )
+        if _run_typer(["xdotool", "key", "--clearmodifiers", key], 3):
             return True
-        except Exception:
-            pass
 
     return False
 

@@ -96,7 +96,16 @@ class ScreenObserver:
             return ""
 
         target_img = img
-        if fw and fw.size and fw.size[0] > 50 and fw.size[1] > 50:
+        # Only crop when the compositor actually reports an absolute origin.
+        # niri exposes tile size but no screen position; cropping at a guessed
+        # (0, 0) read the wrong part of the screen entirely.
+        if (
+            fw
+            and fw.size
+            and fw.size[0] > 50
+            and fw.size[1] > 50
+            and fw.position is not None
+        ):
             w, h = img.size
             x, y = fw.position
             fw_w, fw_h = fw.size
@@ -153,9 +162,16 @@ class ScreenObserver:
         print("[ScreenObserver] 🛑 Background screen monitoring stopped.")
 
     def pause(self) -> None:
-        """Temporarily pause screen capture (privacy mode)."""
+        """Temporarily pause screen capture (privacy mode).
+
+        Clearing the cache matters: a paused observer used to keep serving the
+        last frame it captured, so "paused" still handed screenshots to callers.
+        """
         with self._lock:
             self._paused = True
+            self._last_observation = None
+            self._cached_ocr = ""
+            self._last_ocr_time = 0.0
         print("[ScreenObserver] ⏸️ Screen monitoring paused (privacy mode).")
 
     def resume(self) -> None:
@@ -167,6 +183,10 @@ class ScreenObserver:
     def is_active(self) -> bool:
         with self._lock:
             return self._running and not self._paused
+
+    def is_paused(self) -> bool:
+        with self._lock:
+            return self._paused
 
     def add_listener(self, callback: Callable[[ScreenObservation], None]) -> None:
         """Register a callback invoked whenever a significant screen change occurs."""
@@ -181,10 +201,17 @@ class ScreenObserver:
             return self._last_observation
 
     def get_latest_frame(self) -> tuple[bytes, str]:
-        """Return (jpeg_bytes, 'image/jpeg') for immediate injection into LLM."""
+        """Return (jpeg_bytes, 'image/jpeg') for immediate injection into LLM.
+
+        Raises RuntimeError while paused so callers cannot treat a privacy
+        pause as a normal capture.
+        """
         with self._lock:
-            if self._last_observation and self._last_observation.frame_jpeg:
+            paused = self._paused
+            if not paused and self._last_observation and self._last_observation.frame_jpeg:
                 return self._last_observation.frame_jpeg, "image/jpeg"
+        if paused:
+            raise RuntimeError("screen capture is paused (privacy mode)")
         # If no frame yet in memory, take one synchronously
         return self._capture_frame_jpeg()
 
@@ -360,7 +387,13 @@ class ScreenObserver:
         return buf.getvalue(), "image/jpeg"
 
     def capture_observation(self) -> Optional[ScreenObservation]:
-        """Capture the screen immediately, run OCR, and return a fresh ScreenObservation."""
+        """Capture the screen immediately, run OCR, and return a fresh ScreenObservation.
+
+        Returns None while paused. A privacy pause has to mean no capture at
+        all, including explicit calls that bypass the monitor loop.
+        """
+        if self.is_paused():
+            return None
         pil_img = self._grab_screen_pil()
         if not pil_img:
             return None

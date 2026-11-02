@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import re
@@ -487,6 +488,489 @@ def forget(key: str, category: str = "notes") -> str:
 
 
 forget_memory = forget
+
+
+# ── Layered memory ────────────────────────────────────────────────────────────
+#
+# Personal memory (long_term.json) answers "who is this person?". It is a poor
+# place for "which branch is this repo on?" or "what did step 3 of the current
+# task find?" — those facts are true only inside a workspace or a task, and
+# mixing them into the personal store means the assistant eventually recites
+# build commands as if they were hobbies.
+#
+# Three layers, plus a fourth for agent work:
+#
+#   personal   long_term.json — durable facts about the user. Unchanged.
+#   workspace  keyed by repository/workspace id — branch, conventions, commands.
+#   task       keyed by task id — findings that matter while a job is running.
+#   agent      keyed by agent/workspace id — durable notes for a long-running
+#              agent, including the goal it was created for.
+#
+# Workspace/task/agent entries live in memory/layers.json, separate from the
+# personal store. That is deliberate: every existing reader of long_term.json
+# (prompt assembly, recall, the memory panel) keeps working untouched, and a
+# corrupt layer file can never take the personal memory down with it.
+#
+# SENSITIVE ENTRIES
+#   An entry can be marked sensitive. Sensitive values are still stored (the
+#   user asked for them to be remembered) but they are excluded from every
+#   prompt block and from ordinary recall. Reading one requires an explicit
+#   include_sensitive=True, which only the caller can supply. Nothing captures
+#   screen pixels or audio here — those never enter memory at all.
+
+LAYER_NAMES = ("personal", "workspace", "task", "agent")
+_SCOPED_LAYERS = ("workspace", "task", "agent")
+
+LAYERS_PATH = BASE_DIR / "memory" / "layers.json"
+LAYERS_BACKUP_PATH = BASE_DIR / "memory" / "layers.json.bak"
+
+MAX_LAYER_ENTRIES = 120       # per scope
+MAX_LAYER_SCOPES = 40         # per layer; oldest scope is dropped first
+LAYER_PROMPT_CHARS = 900      # per layer, in the system prompt
+LAYER_VALUE_LENGTH = MAX_VALUE_LENGTH
+
+_layers_lock = Lock()
+
+
+def workspace_scope(path: str | os.PathLike | None = None) -> str:
+    """A stable id for the workspace containing `path`.
+
+    The id is the directory name plus a short hash of the absolute path, so two
+    checkouts both called "app" do not share memory. `.git` is looked for by
+    walking up rather than by shelling out to git: this runs at session start
+    and must not block on a subprocess.
+    """
+    root = Path(path or os.getcwd()).expanduser().resolve()
+    for candidate in (root, *root.parents):
+        if (candidate / ".git").exists():
+            root = candidate
+            break
+    digest = hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:8]
+    return f"{root.name or 'workspace'}@{digest}"
+
+
+def _normalise_scope(scope: str | None) -> str:
+    scope = (scope or "").strip()
+    return scope[:120] if scope else "default"
+
+
+def _layer_entry(value: str, sensitive: bool = False, source: str = "") -> dict:
+    text = str(value or "").strip()
+    if len(text) > LAYER_VALUE_LENGTH:
+        text = text[:LAYER_VALUE_LENGTH].rstrip() + "…"
+    return {
+        "value": text,
+        "updated": datetime.now().isoformat(timespec="seconds"),
+        "sensitive": bool(sensitive),
+        "source": str(source or "")[:80],
+    }
+
+
+class LayeredMemoryStore:
+    """Workspace, task and agent memory, persisted atomically.
+
+    A separate class rather than module globals makes the store testable with a
+    temporary path and keeps the personal store's locking independent.
+    """
+
+    def __init__(self, path: Path = LAYERS_PATH, backup_path: Path = LAYERS_BACKUP_PATH):
+        self.path = Path(path)
+        self.backup_path = Path(backup_path)
+        self._lock = Lock()
+
+    # ── Disk ───────────────────────────────────────────────────────────────
+
+    def _empty(self) -> dict:
+        return {layer: {} for layer in _SCOPED_LAYERS}
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            if self.backup_path.exists():
+                try:
+                    data = json.loads(self.backup_path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        return self._normalise(data)
+                except Exception:
+                    pass
+            return self._empty()
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return self._normalise(data)
+        except Exception as e:
+            print(f"[Memory] ⚠️ Layer load error: {e}")
+            if self.backup_path.exists():
+                try:
+                    data = json.loads(self.backup_path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        print("[Memory] 🔄 Recovered layer memory from backup.")
+                        return self._normalise(data)
+                except Exception:
+                    pass
+        return self._empty()
+
+    @staticmethod
+    def _normalise(data: dict) -> dict:
+        out = {layer: {} for layer in _SCOPED_LAYERS}
+        for layer in _SCOPED_LAYERS:
+            scopes = data.get(layer, {})
+            if isinstance(scopes, dict):
+                out[layer] = {
+                    _normalise_scope(scope): entries
+                    for scope, entries in scopes.items()
+                    if isinstance(entries, dict)
+                }
+        return out
+
+    def _save(self, data: dict) -> None:
+        data = self._prune(data)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(data, indent=2, ensure_ascii=False)
+        temp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", dir=self.path.parent, delete=False, encoding="utf-8"
+            ) as tf:
+                tf.write(payload)
+                tf.flush()
+                os.fsync(tf.fileno())
+                temp_file = tf.name
+            if self.path.exists():
+                try:
+                    self.path.replace(self.backup_path)
+                except Exception:
+                    pass
+            os.replace(temp_file, self.path)
+        except Exception as e:
+            print(f"[Memory] ❌ Layer save error: {e}")
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
+
+    def _prune(self, data: dict) -> dict:
+        """Bound each scope, then bound the number of scopes per layer."""
+        for layer in _SCOPED_LAYERS:
+            scopes = data.setdefault(layer, {})
+            for scope, entries in list(scopes.items()):
+                if len(entries) > MAX_LAYER_ENTRIES:
+                    ordered = sorted(
+                        entries.items(),
+                        key=lambda kv: (kv[1] or {}).get("updated", ""),
+                    )
+                    for key, _ in ordered[: len(entries) - MAX_LAYER_ENTRIES]:
+                        del entries[key]
+            if len(scopes) > MAX_LAYER_SCOPES:
+                newest = sorted(
+                    scopes.items(),
+                    key=lambda kv: max(
+                        ((e or {}).get("updated", "") for e in kv[1].values()),
+                        default="",
+                    ),
+                    reverse=True,
+                )
+                data[layer] = dict(newest[:MAX_LAYER_SCOPES])
+        return data
+
+    # ── Public API ─────────────────────────────────────────────────────────
+
+    def remember(
+        self,
+        layer: str,
+        key: str,
+        value: str,
+        scope: str = "",
+        *,
+        sensitive: bool = False,
+        source: str = "",
+    ) -> str:
+        if layer not in _SCOPED_LAYERS:
+            return f"Unknown memory layer: {layer}"
+        key = (key or "").strip()
+        if not key:
+            return "A memory key is required."
+        if value is None or not str(value).strip():
+            return "A memory value is required."
+        scope = _normalise_scope(scope)
+        with self._lock:
+            data = self._load()
+            entries = data[layer].setdefault(scope, {})
+            entries[key] = _layer_entry(str(value), sensitive=sensitive, source=source)
+            self._save(data)
+        print(f"[Memory] 💾 {layer}/{scope}/{key}")
+        return f"Remembered in {layer} memory: {key}"
+
+    def recall(
+        self,
+        layer: str,
+        scope: str = "",
+        query: str = "",
+        limit: int = 8,
+        *,
+        include_sensitive: bool = False,
+    ) -> list[dict]:
+        if layer not in _SCOPED_LAYERS:
+            return []
+        scope = _normalise_scope(scope)
+        with self._lock:
+            entries = dict((self._load().get(layer, {}) or {}).get(scope, {}) or {})
+        words = [w for w in re.split(r"[^\w]+", (query or "").lower()) if len(w) > 1]
+        scored = []
+        for key, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("sensitive") and not include_sensitive:
+                continue
+            val = str(entry.get("value", "") or "")
+            if not val:
+                continue
+            score = _score(words, layer, key, val) if words else 1
+            if score > 0:
+                scored.append((score, {
+                    "layer": layer,
+                    "scope": scope,
+                    "key": key,
+                    "value": val,
+                    "updated": entry.get("updated", ""),
+                    "sensitive": bool(entry.get("sensitive")),
+                }))
+        # Relevance first, then newest. With no query every row scores 1 and
+        # recency is what makes the prompt block useful.
+        scored.sort(key=lambda pair: (pair[0], pair[1]["updated"]), reverse=True)
+        return [row for _score_value, row in scored[: max(1, limit)]]
+
+    def search(
+        self,
+        query: str = "",
+        limit: int = 8,
+        *,
+        include_sensitive: bool = False,
+    ) -> list[dict]:
+        """Search every scope in every scoped layer."""
+        rows: list[dict] = []
+        for layer in _SCOPED_LAYERS:
+            for scope in self.scopes(layer):
+                rows.extend(self.recall(
+                    layer, scope, query, limit,
+                    include_sensitive=include_sensitive,
+                ))
+        return rows[: max(1, limit)]
+
+    def scopes(self, layer: str) -> list[str]:
+        if layer not in _SCOPED_LAYERS:
+            return []
+        with self._lock:
+            return list((self._load().get(layer, {}) or {}).keys())
+
+    def forget(self, layer: str, key: str, scope: str = "") -> bool:
+        if layer not in _SCOPED_LAYERS:
+            return False
+        scope = _normalise_scope(scope)
+        with self._lock:
+            data = self._load()
+            entries = (data.get(layer, {}) or {}).get(scope, {})
+            if key not in entries:
+                return False
+            del entries[key]
+            self._save(data)
+        return True
+
+    def clear(self, layer: str, scope: str | None = None) -> None:
+        """Drop one scope, or an entire layer when scope is None."""
+        if layer not in _SCOPED_LAYERS:
+            return
+        with self._lock:
+            data = self._load()
+            if scope is None:
+                data[layer] = {}
+            else:
+                data.get(layer, {}).pop(_normalise_scope(scope), None)
+            self._save(data)
+
+    def snapshot(self, layer: str, scope: str = "", *, include_sensitive: bool = False) -> dict:
+        return {
+            row["key"]: row["value"]
+            for row in self.recall(layer, scope, limit=MAX_LAYER_ENTRIES,
+                                   include_sensitive=include_sensitive)
+        }
+
+    def format_for_prompt(
+        self,
+        layer: str,
+        scope: str = "",
+        max_chars: int = LAYER_PROMPT_CHARS,
+        *,
+        include_sensitive: bool = False,
+    ) -> str:
+        rows = self.recall(layer, scope, limit=MAX_LAYER_ENTRIES,
+                           include_sensitive=include_sensitive)
+        if not rows:
+            return ""
+        label = {
+            "workspace": "WORKSPACE MEMORY",
+            "task": "TASK MEMORY",
+            "agent": "AGENT MEMORY",
+        }[layer]
+        scope = _normalise_scope(scope)
+        lines = [f"[{label} — {scope}]"]
+        used = len(lines[0]) + 1
+        for row in rows:
+            line = f"  - {row['key']}: {row['value']}"
+            if used + len(line) + 1 > max_chars:
+                lines.append("  … (more stored; call recall_memory)")
+                break
+            lines.append(line)
+            used += len(line) + 1
+        return "\n".join(lines)
+
+
+_default_layer_store: LayeredMemoryStore | None = None
+_layer_store_lock = Lock()
+
+
+def get_layered_memory() -> LayeredMemoryStore:
+    global _default_layer_store
+    with _layer_store_lock:
+        if _default_layer_store is None:
+            _default_layer_store = LayeredMemoryStore()
+        return _default_layer_store
+
+
+def _personal_rows(query: str = "", limit: int = 8) -> list[dict]:
+    memory = load_memory()
+    words = [w for w in re.split(r"[^\w]+", (query or "").lower()) if len(w) > 1]
+    rows = []
+    for cat, items in memory.items():
+        if not isinstance(items, dict):
+            continue
+        for key, entry in items.items():
+            val = _entry_value(entry)
+            if not val:
+                continue
+            score = _score(words, cat, key, val) if words else 1
+            if score > 0:
+                rows.append({
+                    "layer": "personal",
+                    "scope": cat,
+                    "key": key,
+                    "value": val,
+                    "updated": (entry.get("updated", "") if isinstance(entry, dict) else ""),
+                    "sensitive": False,
+                })
+    rows.sort(key=lambda r: (r["updated"], r["key"]), reverse=True)
+    return rows[: max(1, limit)]
+
+
+def remember_layer(
+    layer: str,
+    key: str,
+    value: str,
+    scope: str = "",
+    *,
+    category: str = "notes",
+    sensitive: bool = False,
+    source: str = "",
+) -> str:
+    """Write to one layer. `personal` delegates to the existing store."""
+    if layer == "personal":
+        valid = {"identity", "preferences", "projects", "relationships", "wishes", "notes"}
+        category = category if category in valid else "notes"
+        update_memory({category: {key: {"value": value}}})
+        return f"Remembered in personal memory: {category}/{key}"
+    return get_layered_memory().remember(
+        layer, key, value, scope, sensitive=sensitive, source=source)
+
+
+def recall_layer(
+    layer: str,
+    scope: str = "",
+    query: str = "",
+    limit: int = 8,
+    *,
+    include_sensitive: bool = False,
+) -> list[dict]:
+    if layer == "personal":
+        return _personal_rows(query, limit)
+    return get_layered_memory().recall(
+        layer, scope, query, limit, include_sensitive=include_sensitive)
+
+
+def recall_layer_text(
+    layer: str,
+    scope: str = "",
+    query: str = "",
+    limit: int = 8,
+) -> str:
+    """A readable recall result for one layer, used by the recall_memory tool."""
+    rows = recall_layer(layer, scope, query, limit)
+    if not rows:
+        return (f"Nothing stored in {layer} memory about '{query}'." if query
+                else f"No {layer} memory stored yet.")
+    lines = [
+        f"{r['scope']}/{r['key']}: {r['value']}" if layer != "personal"
+        else f"{r['key']}: {r['value']}"
+        for r in rows
+    ]
+    head = (f"{layer} memory matching '{query}':" if query
+            else f"{layer} memory:")
+    return head + "\n" + "\n".join(lines)
+
+
+def forget_layer(layer: str, key: str, scope: str = "", category: str = "notes") -> str:
+    if layer == "personal":
+        return forget(key, category)
+    ok = get_layered_memory().forget(layer, key, scope)
+    return (f"Forgotten: {layer}/{_normalise_scope(scope)}/{key}" if ok
+            else f"Not found: {layer}/{_normalise_scope(scope)}/{key}")
+
+
+def format_layered_memory_for_prompt(
+    workspace: str = "",
+    task: str = "",
+    agent: str = "",
+    max_chars: int = LAYER_PROMPT_CHARS,
+) -> str:
+    """Personal + workspace + task + agent, in that order.
+
+    Personal comes first because identity should not be buried under a branch
+    name. Task and agent blocks are empty unless a scope is supplied, so an
+    ordinary Talk session sees only personal and workspace memory.
+    """
+    blocks: list[str] = []
+    personal = format_memory_for_prompt(load_memory()).rstrip()
+    if personal:
+        blocks.append(personal)
+    for layer, scope in (("workspace", workspace), ("task", task), ("agent", agent)):
+        if not scope:
+            continue
+        block = get_layered_memory().format_for_prompt(layer, scope, max_chars)
+        if block:
+            blocks.append(block)
+    return "\n\n".join(blocks) + ("\n" if blocks else "")
+
+
+def search_all_memory(query: str, limit: int = 8) -> str:
+    """recall_memory across every layer and scope, personal first."""
+    rows = _personal_rows(query, limit)
+    try:
+        rows.extend(get_layered_memory().search(query, limit))
+    except Exception as e:
+        print(f"[Memory] ⚠️ Layer search failed: {e}")
+    if not rows:
+        return (f"Nothing stored about '{query}'." if query
+                else "I have not stored anything about this person yet.")
+    # Personal rows come first; layer rows are already relevance-sorted.
+    rows = rows[: max(1, limit)]
+    lines = [
+        f"{r['layer']}/{r['scope']}/{r['key']}: {r['value']}"
+        if r["layer"] != "personal" else
+        f"personal/{r['key']}: {r['value']}"
+        for r in rows
+    ]
+    head = (f"Stored facts matching '{query}':" if query
+            else "Everything currently stored:")
+    return head + "\n" + "\n".join(lines)
 
 
 # ── Session memory ─────────────────────────────────────────────────────────────

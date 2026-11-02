@@ -100,6 +100,11 @@ def desktop_context_handler(parameters: dict, **kwargs) -> str:
 
     elif action == "pause_monitor":
         observer.pause()
+        try:
+            from core.brain import get_brain
+            get_brain().forget_screen()
+        except Exception:
+            pass
         return "Background screen monitoring has been paused (privacy mode enabled)."
 
     elif action == "resume_monitor":

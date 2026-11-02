@@ -73,6 +73,11 @@ _IMG_MAX_W = 1280
 _IMG_MAX_H = 720
 _JPEG_Q    = 82
 
+# A cached frame older than this is not "what is on screen now". The observer
+# sleeps up to 8s when idle, so an unbounded cache could describe a different
+# window entirely.
+_CACHE_MAX_AGE = 2.5
+
 
 def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]:
     if not _PIL:
@@ -90,15 +95,16 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
 
 
 def _capture_screen() -> tuple[bytes, str]:
-    try:
-        from core.screen_observer import get_screen_observer
-        obs = get_screen_observer()
-        if obs.is_active():
-            img_b, mime_t = obs.get_latest_frame()
-            if img_b:
-                return img_b, mime_t
-    except Exception:
-        pass
+    """Capture the screen once. Honours the observer's privacy pause."""
+    from core.screen_observer import get_screen_observer
+    obs = get_screen_observer()
+    if obs.is_paused():
+        raise RuntimeError("screen capture is paused (privacy mode)")
+
+    # Reuse the observer's cached frame only while it is genuinely fresh.
+    latest = obs.get_latest_observation()
+    if latest is not None and latest.frame_jpeg and latest.age() <= _CACHE_MAX_AGE:
+        return latest.frame_jpeg, "image/jpeg"
 
     # Wayland / Linux: prefer grim if available (mss produces black screen on niri/Wayland)
     import shutil

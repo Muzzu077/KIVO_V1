@@ -2214,6 +2214,92 @@ class ConfirmBanner(_HudOverlay):
         no.setFocus()
 
 
+class DriveBanner(_HudOverlay):
+    """On-screen signal that JARVIS is driving the desktop.
+
+    Bound to DriveSession: the goal and current step update as the orchestrator
+    works. STOP takes the same path as Escape / the HUD interrupt button, so one
+    press cancels the plan and stops speech. Talk never raises this banner —
+    its appearance is therefore a truthful signal that something sustained is
+    happening.
+    """
+
+    stopped = pyqtSignal()
+    _OW = 420
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            DriveBanner {{
+                background: rgba(0, 14, 10, 248);
+                border: 1px solid {C.GREEN_D};
+                border-radius: 6px;
+            }}
+        """)
+        self.setFixedWidth(self._OW)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(6)
+
+        hdr = QHBoxLayout(); hdr.setSpacing(8)
+        tag = QLabel("▸  DRIVE")
+        tag.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        tag.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
+        hdr.addWidget(tag)
+        hdr.addStretch()
+        self._elapsed = QLabel("")
+        self._elapsed.setFont(QFont("Courier New", 8))
+        self._elapsed.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        hdr.addWidget(self._elapsed)
+        lay.addLayout(hdr)
+
+        self._goal = QLabel("")
+        self._goal.setWordWrap(True)
+        self._goal.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        self._goal.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+        lay.addWidget(self._goal)
+
+        self._action = QLabel("")
+        self._action.setWordWrap(True)
+        self._action.setFont(QFont("Courier New", 8))
+        self._action.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        lay.addWidget(self._action)
+
+        stop = QPushButton("■  STOP")
+        stop.setFixedHeight(30)
+        stop.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.ACC};
+                border: 1px solid {C.ACC}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ background: rgba(255,107,0,40); }}
+        """)
+        stop.clicked.connect(self.stopped.emit)
+        lay.addWidget(stop)
+
+        self._started_at = time.monotonic()
+        self._tick = QTimer(self)
+        self._tick.setInterval(1000)
+        self._tick.timeout.connect(self._refresh_elapsed)
+        self._tick.start()
+
+    def set_state(self, goal: str, action: str, started_at: float = 0.0) -> None:
+        self._goal.setText((goal or "Working").strip()[:160])
+        self._action.setText((action or "…").strip()[:200])
+        if started_at:
+            self._started_at = started_at
+        self._refresh_elapsed()
+        self.adjustSize()
+
+    def _refresh_elapsed(self) -> None:
+        elapsed = max(0.0, time.monotonic() - self._started_at)
+        self._elapsed.setText(f"{int(elapsed)}s")
+
+
 class AudioDeviceOverlay(_HudOverlay):
     """Choose which microphone JARVIS listens to and which speakers it uses.
 
@@ -4419,6 +4505,8 @@ class MainWindow(QMainWindow):
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
     _confirm_sig    = pyqtSignal(str, str)   # (title, detail) — irreversible-action gate
     _confirm_hide_sig = pyqtSignal()
+    _drive_sig      = pyqtSignal(str, str, float)  # (goal, action, started_at) — Drive HUD
+    _drive_hide_sig = pyqtSignal()
     _wake_dl_sig    = pyqtSignal(bool, str)  # wake-word install finished (ok, message)
     _quiz_sig       = pyqtSignal(str, object, object)  # (topic, questions, grader)
     _quiz_hide_sig  = pyqtSignal()
@@ -4457,6 +4545,7 @@ class MainWindow(QMainWindow):
         self.on_voice_change   = None   # callable: () -> None — rebuild session with new voice
         self.on_audio_device_change = None  # callable: () -> None — reopen audio streams
         self._confirm_overlay  = None   # live ConfirmBanner, if one is on screen
+        self._drive_overlay    = None   # live DriveBanner while an agent job runs
         self.get_plugins       = None   # callable: () -> list[dict], set by JarvisLive
         self.get_plugin_settings = None # callable: () -> list[dict] settings schemas, set by JarvisLive
         self.on_wake_toggle    = None   # callable: (enable: bool) -> str, set by JarvisLive
@@ -4698,6 +4787,8 @@ class MainWindow(QMainWindow):
         self._camera_sig.connect(self._show_camera_frame)
         self._confirm_sig.connect(self._show_confirm_banner)
         self._confirm_hide_sig.connect(self._hide_confirm_banner)
+        self._drive_sig.connect(self._apply_drive_banner)
+        self._drive_hide_sig.connect(self._hide_drive_banner)
         self._cam_stream_sig.connect(self._on_cam_stream)
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._wake_btns_sig.connect(self._refresh_wake_btns)
@@ -5343,6 +5434,9 @@ class MainWindow(QMainWindow):
         # Clipboard panel — bottom-center
         if hasattr(self, '_clipboard_panel') and self._clipboard_panel.isVisible():
             self._position_clipboard_panel()
+        # Drive banner — top-center, under the header
+        if getattr(self, "_drive_overlay", None) is not None and self._drive_overlay.isVisible():
+            self._position_drive_banner()
         # Quick drawer — reposition if open
         if hasattr(self, '_quick_drawer') and self._quick_drawer.isVisible():
             self._position_quick_drawer()
@@ -6969,6 +7063,46 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log.append_log(f"ERR: Confirmation failed — {e}")
 
+    # ── Drive (agent-level desktop control) ───────────────────────────────────
+
+    def _apply_drive_banner(self, goal: str, action: str, started_at: float = 0.0):
+        """Show or refresh the Drive HUD. Reuses one widget across step updates."""
+        ov = getattr(self, "_drive_overlay", None)
+        if ov is None:
+            ov = DriveBanner(parent=self.centralWidget())
+            ov.stopped.connect(self._on_drive_stop)
+            self._drive_overlay = ov
+        ov.set_state(goal, action, started_at)
+        self._position_drive_banner()
+        ov.show()
+        ov.raise_()
+
+    def _hide_drive_banner(self):
+        ov = getattr(self, "_drive_overlay", None)
+        if ov is not None:
+            ov.hide()
+            ov.deleteLater()
+            self._drive_overlay = None
+
+    def _position_drive_banner(self):
+        ov = getattr(self, "_drive_overlay", None)
+        if ov is None:
+            return
+        cw = self.centralWidget()
+        ov.adjustSize()
+        # Sit just under the 54px header — sustained status, not a modal.
+        ov.setGeometry(
+            max(0, (cw.width() - ov.width()) // 2),
+            62,
+            ov.width(),
+            ov.height(),
+        )
+
+    def _on_drive_stop(self):
+        # Same unified stop as Escape / the interrupt button: cancels the plan
+        # via cancel_active and drains speech. The Drive listener then hides us.
+        self._do_interrupt()
+
     def _open_plugin_manager(self):
         plugins = self.get_plugins() if self.get_plugins else []
         cw = self.centralWidget()
@@ -7196,6 +7330,22 @@ class JarvisUI:
     def hide_confirm(self) -> None:
         """Thread-safe: take the gate down."""
         self._win._confirm_hide_sig.emit()
+
+    def update_drive(self, goal: str, action: str, started_at: float = 0.0) -> None:
+        """Thread-safe: show/refresh the Drive HUD while an agent job runs.
+
+        Called from DriveSession listeners, which fire on orchestrator worker
+        threads — never touch widgets directly from there.
+        """
+        self._win._drive_sig.emit(
+            str(goal or "")[:160],
+            str(action or "")[:200],
+            float(started_at or 0.0),
+        )
+
+    def hide_drive(self) -> None:
+        """Thread-safe: take the Drive HUD down."""
+        self._win._drive_hide_sig.emit()
 
     @property
     def get_plugins(self):

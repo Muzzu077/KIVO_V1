@@ -162,6 +162,7 @@ class ActionRegistry:
 
         # ── Policy check ──────────────────────────────────────────────
         start_time = _time_module.monotonic()
+        risk = control = action_verb = None
         try:
             from core.action_policy import (
                 check as policy_check,
@@ -175,16 +176,42 @@ class ActionRegistry:
             if denial:
                 return denial
 
-            if control == Control.CONFIRM:
-                # Delegate to core/confirm.py — the tool handler itself may
-                # already do this (computer_settings does), so we set a flag
-                # the handler can check to avoid double-gating.
+            if control == Control.CONFIRM and not parameters.get("_policy_confirmed"):
+                # Park the whole call behind the on-screen gate. The model never
+                # gets to write its own permission slip, and the handler does not
+                # run at all until a human presses CONFIRM.
+                from core import confirm
+                if confirm.pending_title():
+                    return (
+                        "[CONFIRMATION_PENDING] There is already a confirmation "
+                        "waiting on screen. The user has to answer that one first."
+                    )
                 parameters["_policy_requires_confirm"] = True
+                title = f"{name}: {action_verb or 'action'}"
+                detail = _describe_confirmation(name, action_verb, parameters)
+
+                def _gated() -> str:
+                    parameters["_policy_confirmed"] = True
+                    return self._execute(name, rec, parameters, ctx,
+                                         risk, control, action_verb, start_time)
+
+                return confirm.request(
+                    key=f"{name}.{action_verb or 'run'}",
+                    title=title,
+                    detail=detail,
+                    run=_gated,
+                )
         except ImportError:
             # action_policy not available yet — run ungated
-            risk = control = action_verb = None
+            pass
         # ──────────────────────────────────────────────────────────────
 
+        return self._execute(name, rec, parameters, ctx,
+                             risk, control, action_verb, start_time)
+
+    def _execute(self, name, rec, parameters, ctx, risk, control,
+                 action_verb, start_time) -> str:
+        """Invoke the handler and write the audit record."""
         try:
             result = _call_handler(rec.handler, parameters, ctx or {}) or "Done."
         except Exception as e:
@@ -198,6 +225,7 @@ class ActionRegistry:
         # ── Audit ─────────────────────────────────────────────────────
         if risk is not None:
             try:
+                from core.action_policy import record_execution
                 record_execution(
                     tool=name,
                     action=action_verb,
@@ -213,6 +241,22 @@ class ActionRegistry:
         # ──────────────────────────────────────────────────────────────
 
         return result
+
+
+def _describe_confirmation(name: str, action: str, parameters: dict) -> str:
+    """One human-readable line for the on-screen confirmation banner."""
+    skip = {"_policy_requires_confirm", "_policy_confirmed", "confirmed"}
+    shown = []
+    for key, value in parameters.items():
+        if key in skip or value in (None, "", [], {}):
+            continue
+        text = str(value)
+        if len(text) > 120:
+            text = text[:117] + "…"
+        shown.append(f"{key}={text}")
+    body = ", ".join(shown[:4])
+    verb = action or "run"
+    return f"{name} · {verb}" + (f"\n{body}" if body else "")
 
 
 def _call_handler(fn: Callable, parameters: dict, ctx: dict) -> str:

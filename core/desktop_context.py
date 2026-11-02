@@ -57,7 +57,10 @@ class WindowInfo:
     is_focused: bool = False
     is_floating: bool = False
     size: tuple[int, int] = (0, 0)       # (width, height)
-    position: tuple[int, int] = (0, 0)   # (x, y)
+    # Absolute screen position, or None when the compositor does not expose it.
+    # niri's IPC gives tile size but no absolute origin, so guessing (0, 0) made
+    # window-relative OCR read the top-left corner of the screen instead.
+    position: tuple[int, int] | None = None
     timestamp: float = 0.0
 
 
@@ -146,22 +149,75 @@ class _NiriBackend:
         return shutil.which("niri") is not None and os.environ.get("WAYLAND_DISPLAY")
 
     @staticmethod
+    def _output_origins() -> dict[str, tuple[int, int]]:
+        """Map output name -> logical top-left origin, for multi-monitor offsets."""
+        data = _run_json(["niri", "msg", "--json", "outputs"])
+        origins: dict[str, tuple[int, int]] = {}
+        if not isinstance(data, dict):
+            return origins
+        for name, info in data.items():
+            logical = (info or {}).get("logical") or {}
+            try:
+                origins[name] = (int(logical.get("x", 0)), int(logical.get("y", 0)))
+            except (TypeError, ValueError):
+                origins[name] = (0, 0)
+        return origins
+
+    @staticmethod
+    def _position_from_layout(
+        layout: dict,
+        workspace_id,
+        workspaces: dict,
+        origins: dict[str, tuple[int, int]],
+    ) -> tuple[int, int] | None:
+        """Absolute window origin, or None when niri does not report one.
+
+        `tile_pos_in_workspace_view` is workspace-relative; add the output's
+        logical origin so the result is in global screen coordinates. Older
+        niri versions report null here — in that case we return None rather
+        than invent (0, 0).
+        """
+        pos = (layout or {}).get("tile_pos_in_workspace_view")
+        if not pos or len(pos) < 2:
+            return None
+        output = workspaces.get(workspace_id, "")
+        ox, oy = origins.get(output, (0, 0))
+        try:
+            return (int(ox + pos[0]), int(oy + pos[1]))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _workspace_outputs() -> dict:
+        data = _run_json(["niri", "msg", "--json", "workspaces"])
+        if not isinstance(data, list):
+            return {}
+        return {ws.get("id"): ws.get("output", "") for ws in data}
+
+    @staticmethod
     def get_windows() -> list[WindowInfo]:
         data = _run_json(["niri", "msg", "--json", "windows"])
         if not data or not isinstance(data, list):
             return []
+        workspaces = _NiriBackend._workspace_outputs()
+        origins = _NiriBackend._output_origins()
         result = []
         for w in data:
-            ws = w.get("layout", {}).get("window_size", [0, 0])
+            layout = w.get("layout", {}) or {}
+            ws = layout.get("window_size", [0, 0])
+            workspace_id = w.get("workspace_id", 0)
             result.append(WindowInfo(
                 window_id=w.get("id", 0),
                 title=w.get("title", ""),
                 app_id=w.get("app_id", ""),
                 pid=w.get("pid", 0),
-                workspace_id=w.get("workspace_id", 0),
+                workspace_id=workspace_id,
                 is_focused=w.get("is_focused", False),
                 is_floating=w.get("is_floating", False),
                 size=(int(ws[0]), int(ws[1])) if len(ws) >= 2 else (0, 0),
+                position=_NiriBackend._position_from_layout(
+                    layout, workspace_id, workspaces, origins
+                ),
                 timestamp=time.monotonic(),
             ))
         return result
@@ -171,16 +227,23 @@ class _NiriBackend:
         data = _run_json(["niri", "msg", "--json", "focused-window"])
         if not data or not isinstance(data, dict):
             return None
-        ws = data.get("layout", {}).get("window_size", [0, 0])
+        layout = data.get("layout", {}) or {}
+        ws = layout.get("window_size", [0, 0])
+        workspace_id = data.get("workspace_id", 0)
+        workspaces = _NiriBackend._workspace_outputs()
+        origins = _NiriBackend._output_origins()
         return WindowInfo(
             window_id=data.get("id", 0),
             title=data.get("title", ""),
             app_id=data.get("app_id", ""),
             pid=data.get("pid", 0),
-            workspace_id=data.get("workspace_id", 0),
+            workspace_id=workspace_id,
             is_focused=True,
             is_floating=data.get("is_floating", False),
             size=(int(ws[0]), int(ws[1])) if len(ws) >= 2 else (0, 0),
+            position=_NiriBackend._position_from_layout(
+                layout, workspace_id, workspaces, origins
+            ),
             timestamp=time.monotonic(),
         )
 

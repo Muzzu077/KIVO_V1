@@ -54,6 +54,8 @@ from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     save_session_summary, pop_last_session,
     search_memory, set_trim_notifier,
+    format_layered_memory_for_prompt, remember_layer, recall_layer,
+    recall_layer_text, search_all_memory, workspace_scope,
 )
 
 # The file-backed tools (open_app, web_search, browser_control, …) are no longer
@@ -486,9 +488,13 @@ TOOL_DECLARATIONS = [
     {
         "name": "save_memory",
         "description": (
-            "Save an important personal fact about the user to long-term memory. "
-            "Call this silently whenever the user reveals something worth remembering: "
-            "name, age, city, job, preferences, hobbies, relationships, projects, or future plans. "
+            "Save an important fact to memory. The default layer is personal: "
+            "durable facts about the user (name, city, preferences, relationships, "
+            "projects, plans). Use layer='workspace' for facts about the current "
+            "repository/environment (branch, test command, conventions), "
+            "layer='task' for findings that only matter while the current job "
+            "runs, and layer='agent' for durable notes inside an agent workspace. "
+            "Call this silently whenever the user reveals something worth remembering. "
             "Do NOT call for: weather, reminders, searches, or one-time commands. "
             "Do NOT announce that you are saving — just call it silently. "
             "Values must be in English regardless of the conversation language."
@@ -496,9 +502,18 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
+                "layer": {
+                    "type": "STRING",
+                    "description": (
+                        "personal (default) — durable facts about the user | "
+                        "workspace — this repo/environment | "
+                        "task — this job only | agent — this agent workspace"
+                    )
+                },
                 "category": {
                     "type": "STRING",
                     "description": (
+                        "For personal memory only: "
                         "identity — name, age, birthday, city, job, language, nationality | "
                         "preferences — favorite food/color/music/film/game/sport, hobbies | "
                         "projects — active projects, goals, things being built | "
@@ -510,14 +525,15 @@ TOOL_DECLARATIONS = [
                 "key":   {"type": "STRING", "description": "Short snake_case key (e.g. name, favorite_food, sister_name)"},
                 "value": {"type": "STRING", "description": "Concise value in English (e.g. Fatih, pizza, older sister)"},
             },
-            "required": ["category", "key", "value"]
+            "required": ["key", "value"]
         }
     },
     {
         "name": "recall_memory",
         "description": (
-            "Look up a fact you have stored about the user but which is NOT in "
-            "the memory block of your system prompt. "
+            "Look up a stored fact that is NOT in the memory block of your system "
+            "prompt. Searches personal memory first, then workspace, task and agent "
+            "layers. "
             "The prompt lists the keys it did not have room for under "
             "'[ALSO REMEMBERED]' — if the user asks about anything named there, "
             "call this FIRST. "
@@ -535,6 +551,13 @@ TOOL_DECLARATIONS = [
                         "Keyword to search for — a name, a topic, a category "
                         "(e.g. 'ayse', 'coffee', 'projects'). "
                         "Leave empty to list everything stored."
+                    ),
+                },
+                "layer": {
+                    "type": "STRING",
+                    "description": (
+                        "Optional: personal | workspace | task | agent. Omit to "
+                        "search every layer."
                     ),
                 },
             },
@@ -611,7 +634,7 @@ class JarvisLive:
         # reconnect: a dropped connection is not news about Wayland.
         self._platform_notes_shown = False
         self.ui             = ui
-        self._asst_name     = "JARVI    S"   # updated each session from config
+        self._asst_name     = "JARVIS"   # updated each session from config
         self.session              = None
         self.audio_in_queue       = None
         self.out_queue            = None
@@ -625,6 +648,19 @@ class JarvisLive:
         self._vision_last_time     = 0.0     # monotonic time of last screen_process call (cooldown guard)
         self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
         self._interrupted          = False   # True while draining audio after user interrupt
+        # One router and one screen-context store for the whole process. The
+        # brain decides what kind of request this is and what screen context (if
+        # any) belongs in front of the model; it never captures anything itself.
+        from core.brain import get_brain
+        self._brain                = get_brain()
+        self._screen_ctx_last      = 0.0     # monotonic time of last pre-turn capture
+        self._screen_ctx_inflight  = False
+        self._last_user_text       = ""      # rolling transcript for this turn
+        # Agent/task scopes for layered memory. Empty until a multi-step job
+        # actually creates a workspace; Talk sessions never invent one.
+        self._active_agent_scope   = ""
+        self._active_task_scope    = ""
+        self._workspace_scope      = ""
         # Which engine is holding the conversation, and what it can do.
         # None means Gemini Live — the default and, unless somebody has gone to
         # the providers settings and chosen otherwise, always the case. Every
@@ -783,6 +819,8 @@ class JarvisLive:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
         self.ui.write_log(f"SYS: Awake — {reason}.")
+        # Invocation is the consent to look. One capture, at this moment.
+        self._request_screen_context(reason)
 
     def sleep(self, reason: str = "timeout") -> None:
         if not self._awake:
@@ -791,6 +829,76 @@ class JarvisLive:
         self.set_speaking(False)
         self.ui.set_state("SLEEPING")
         self.ui.write_log(f"SYS: Sleeping — {reason}. Say 'Hey Jarvis' to wake me.")
+
+    # ── Screen context on invocation ────────────────────────────────────────
+    #
+    # The contract is "look when I call you", not "watch me all day". Both the
+    # wake word and push-to-talk go through here, which is why this is triggered
+    # by an invocation and never by a timer. The observer's privacy pause wins:
+    # if capture is off, nothing is taken and the log says so.
+
+    SCREEN_CONTEXT_COOLDOWN = 3.0
+
+    def _request_screen_context(self, reason: str) -> None:
+        """Schedule one capture. Safe to call from any thread."""
+        if self._loop is None:
+            return
+        now = time.monotonic()
+        if self._screen_ctx_inflight or (now - self._screen_ctx_last) < self.SCREEN_CONTEXT_COOLDOWN:
+            return
+        self._screen_ctx_last = now
+        self._screen_ctx_inflight = True
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._attach_screen_context(reason), self._loop)
+        except Exception as e:
+            self._screen_ctx_inflight = False
+            print(f"[Brain] Could not schedule screen context: {e}")
+
+    async def _attach_screen_context(self, reason: str) -> None:
+        try:
+            from core.screen_observer import get_screen_observer
+            observer = get_screen_observer()
+            if observer.is_paused():
+                self.ui.write_log("SYS: Screen context skipped — capture is paused.")
+                return
+
+            loop = asyncio.get_running_loop()
+            obs = await loop.run_in_executor(None, observer.capture_observation)
+            if obs is None:
+                return
+
+            # Store first: even if the session is not up yet, a follow-up can
+            # still refer to what was on screen when JARVIS was called.
+            self._brain.observe(obs)
+            if not self.session:
+                return
+
+            block = self._brain.screen_block("")
+            if not block:
+                return
+
+            import base64 as _b64
+            parts = []
+            if obs.frame_jpeg:
+                parts.append({"inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": _b64.b64encode(obs.frame_jpeg).decode("ascii"),
+                }})
+            parts.append({"text": (
+                "[IMAGE SOURCE: SCREEN CAPTURE — taken at the moment the user "
+                "invoked you, not a continuous feed]\n\n" + block
+            )})
+            await self.session.send_client_content(
+                turns={"role": "user", "parts": parts},
+                turn_complete=False,
+            )
+            print(f"[Brain] 🖥️  Screen context attached "
+                  f"({len(obs.frame_jpeg):,} bytes, reason={reason})")
+        except Exception as e:
+            print(f"[Brain] Screen context failed: {e}")
+        finally:
+            self._screen_ctx_inflight = False
 
     async def _run_sleep_watch(self) -> None:
         """Auto-sleep after the configured silence window (wake-word mode only)."""
@@ -1044,6 +1152,8 @@ class JarvisLive:
             if self._wake_enabled and not self._awake:
                 self._awake = True
                 self._last_user_speech = time.monotonic()
+            # The key press is the invocation: look once, now.
+            self._request_screen_context("push to talk")
         # Releasing the key ends the turn. On Live the server works that out from
         # the audio; a local pipeline has no server, so the release IS the
         # signal — which is also why it is the more reliable of the two ways to
@@ -1075,7 +1185,11 @@ class JarvisLive:
             pass
 
     def interrupt(self) -> None:
-        """Stop JARVIS mid-speech: drain queued audio and open mic immediately."""
+        """Stop JARVIS mid-speech: drain queued audio and open mic immediately.
+
+        Also cancels any multi-step agent job, so a single press/voice-stop
+        stops everything rather than requiring an extra "cancel the task".
+        """
         self._interrupted = True
         q = self.audio_in_queue
         if q:
@@ -1089,19 +1203,23 @@ class JarvisLive:
             if drained:
                 print(f"[JARVIS] ✋ Interrupted — {drained} audio chunks discarded")
         self.set_speaking(False)
-        # The words we were about to mouth are never going to be spoken now.
         self._visemes.reset()
-        self._play_cursor = 0.0     # next batch starts a fresh timeline
+        self._play_cursor = 0.0
         if self._turn_done_event:
             self._turn_done_event.clear()
-        # Draining the queue stops the speakers, but a local engine is still
-        # generating the rest of the answer and would keep filling it back up.
-        # Live has nothing to cancel here — the server stops on its own.
         if self._engine is not None:
             try:
                 self._engine.interrupt()
             except Exception:
                 pass
+        # Cancel any in-flight agent work. This is the unified stop: the voice
+        # "stop" goes through _tool_block_reason which also calls cancel_active,
+        # but the HUD interrupt button goes through here.
+        try:
+            from core.task_orchestrator import get_task_orchestrator
+            get_task_orchestrator().cancel_active()
+        except Exception:
+            pass
         self.ui.write_log("SYS: Interrupted — listening...")
 
     def speak(self, text: str):
@@ -1135,6 +1253,37 @@ class JarvisLive:
         memory     = load_memory()
         mem_str    = format_memory_for_prompt(memory)
         sys_prompt = _load_system_prompt()
+
+        # Workspace memory is per-repository, not per-person. Resolving it once
+        # per connect keeps "this repo uses pytest, not unittest" out of the
+        # block that is supposed to describe the user.
+        try:
+            self._workspace_scope = workspace_scope()
+            layered = format_layered_memory_for_prompt(
+                workspace=self._workspace_scope,
+                task=self._active_task_scope,
+                agent=self._active_agent_scope,
+            )
+        except Exception as e:
+            print(f"[Memory] Layer prompt unavailable: {e}")
+            layered = ""
+        if layered:
+            mem_str = (mem_str + "\n\n" + layered) if mem_str else layered
+
+        execution_ctx = (
+            "[EXECUTION LEVELS]\n"
+            "Talk is conversation or one action. Agent is sustained, multi-step "
+            "work. Infer which one the request needs; never make the user say "
+            "'start an agent'.\n"
+            "- A request that needs several steps across tools belongs to "
+            "orchestrate_task. It creates a scoped workspace and task memory.\n"
+            "- A single action (open, type, switch, volume) belongs to the "
+            "matching tool.\n"
+            "- A request with 'every day/week/morning' is a routine and should "
+            "be scheduled, not run once.\n"
+            "- Dictation writes text into the field the user already chose. Do "
+            "not click, open or switch windows during dictation.\n\n"
+        )
 
         now      = datetime.now()
         time_str = now.strftime("%A, %B %d, %Y — %I:%M %p")
@@ -1209,7 +1358,7 @@ class JarvisLive:
             ),
         })
 
-        parts = [time_ctx, identity_ctx]
+        parts = [time_ctx, identity_ctx, execution_ctx]
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
@@ -1318,6 +1467,58 @@ class JarvisLive:
 
         return out
 
+    # Desktop tools that must never run for a dictation or cancel request.
+    # Dictation inserts text into the field the user already chose; a click or a
+    # window switch would move the text somewhere else, which is the one thing
+    # the feature must not do.
+    _AUTOMATION_TOOLS = frozenset({
+        "computer_control", "computer_settings", "browser_control",
+        "terminal_control", "desktop_context", "desktop_control",
+        "open_app", "send_message", "dev_agent", "orchestrate_task",
+        "game_updater", "youtube_video", "file_controller",
+    })
+
+    def _scope_for_layer(self, layer: str) -> str:
+        """Where a layered write/read belongs.
+
+        Workspace memory is always the current repository. Task and agent
+        memory need an active workspace; before one exists they use a
+        session-only scope rather than falling back to personal memory.
+        """
+        if layer == "workspace":
+            return self._workspace_scope or workspace_scope()
+        if layer in ("task", "agent"):
+            return self._active_agent_scope or self._active_task_scope or "session"
+        return ""
+
+    def _tool_block_reason(self, name: str) -> str:
+        """'' when the tool may run. A sentence for the model otherwise."""
+        text = (self._last_user_text or "").strip()
+        if not text:
+            return ""
+        from core.brain import Intent
+        decision = self._brain.route(text)
+        if decision.intent is Intent.CANCEL:
+            # Actually stop things that are running, not just block new tools.
+            try:
+                from core.task_orchestrator import get_task_orchestrator
+                cancelled = get_task_orchestrator().cancel_active()
+                if cancelled and "No active" not in cancelled:
+                    print(f"[Brain] {cancelled}")
+            except Exception:
+                pass
+            return (
+                "The user asked to stop. Do not run any tool for this turn. "
+                "Acknowledge in one short sentence."
+            )
+        if decision.intent is Intent.DICTATION and name in self._AUTOMATION_TOOLS:
+            return (
+                "This is a dictation request: the user wants text written into "
+                "the field they already chose. Do not click, open, switch, "
+                "scroll or send anything. Use the dictation path instead."
+            )
+        return ""
+
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
@@ -1325,14 +1526,30 @@ class JarvisLive:
         print(f"[JARVIS] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
 
+        # Two cases where the router is policy, not a hint: a request to stop,
+        # and dictation. In both, running a desktop tool is the wrong answer no
+        # matter how confident the model is.
+        _block = self._tool_block_reason(name)
+        if _block:
+            print(f"[Brain] ⛔ {name} blocked: {_block}")
+            return types.FunctionResponse(
+                id=fc.id, name=name,
+                response={"result": _block},
+            )
+
 
         if name == "save_memory":
+            layer    = (args.get("layer") or "personal").lower()
             category = args.get("category", "notes")
             key      = args.get("key", "")
             value    = args.get("value", "")
             if key and value:
-                update_memory({category: {key: {"value": value}}})
-                print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
+                scope = self._scope_for_layer(layer)
+                remember_layer(
+                    layer, key, value, scope,
+                    category=category, source="voice",
+                )
+                print(f"[Memory] 💾 save_memory: {layer}/{scope or category}/{key} = {value}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
             return types.FunctionResponse(
@@ -1349,7 +1566,13 @@ class JarvisLive:
                 # the executor deliberately — it is a dictionary scan over a few
                 # hundred short strings, and a thread hop would cost more than
                 # the work itself.
-                result = search_memory(args.get("query", ""), limit=8)
+                layer = (args.get("layer") or "").lower()
+                query = args.get("query", "")
+                if layer in ("personal", "workspace", "task", "agent"):
+                    result = recall_layer_text(
+                        layer, self._scope_for_layer(layer), query, limit=8)
+                else:
+                    result = search_all_memory(query, limit=8)
 
             elif name == "undo":
                 if str(args.get("action", "")).lower().strip() == "list":
@@ -1373,31 +1596,48 @@ class JarvisLive:
                     self._vision_last_time = _now
                     angle     = args.get("angle", "screen").lower()
                     user_text = args.get("text", "What do you see?")
+                    img_b, mime_t, _stall = b"", "", ""
                     if angle == "camera":
                         img_b, mime_t = await loop.run_in_executor(None, _capture_camera)
                         self.ui.start_camera_stream()
                         self._vision_cam_active = True
-                        print(f"[Vision] 📷 Camera: {len(img_b):,} bytes")
                         _stall = "camera"
                     else:
                         from core.screen_observer import get_screen_observer
-                        img_b, mime_t = get_screen_observer().get_latest_frame()
-                        if not img_b:
-                            img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
-                        print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
-                        _stall = "screen"
-                    self._pending_vision = (img_b, mime_t, user_text, angle)
-                    # The image is attached to this same exchange, so there is
-                    # nothing to stall for and nothing to announce. Asking for an
-                    # acknowledgement here is what produced two spoken answers —
-                    # the model filled that turn by answering the question from
-                    # imagination, then answered it again once it could see.
-                    result = (
-                        f"[VISION_ACTIVE] {_stall.capitalize()} captured and attached to this "
-                        f"same exchange. Do not acknowledge and do not answer yet — the image "
-                        f"is arriving with this result. Reply once, from what you actually see "
-                        f"in it."
-                    )
+                        _observer = get_screen_observer()
+                        if _observer.is_paused():
+                            result = (
+                                "Screen capture is paused for privacy, so I cannot see the "
+                                "screen. Tell the user to resume screen monitoring and ask again."
+                            )
+                        else:
+                            obs = await loop.run_in_executor(
+                                None, _observer.capture_observation)
+                            if obs is not None and obs.frame_jpeg:
+                                img_b, mime_t = obs.frame_jpeg, "image/jpeg"
+                                # Keep the observation so a follow-up ("how do
+                                # I fix it?") can refer to the same screen
+                                # without capturing again.
+                                self._brain.observe(obs)
+                            else:
+                                img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                            _stall = "screen"
+
+                    if img_b:
+                        label = "Camera" if _stall == "camera" else "Screen"
+                        print(f"[Vision] {'📷' if _stall == 'camera' else '🖥️ '} {label}: {len(img_b):,} bytes")
+                        self._pending_vision = (img_b, mime_t, user_text, angle)
+                        # The image is attached to this same exchange, so there is
+                        # nothing to stall for and nothing to announce. Asking for an
+                        # acknowledgement here is what produced two spoken answers —
+                        # the model filled that turn by answering the question from
+                        # imagination, then answered it again once it could see.
+                        result = (
+                            f"[VISION_ACTIVE] {_stall.capitalize()} captured and attached to this "
+                            f"same exchange. Do not acknowledge and do not answer yet — the image "
+                            f"is arriving with this result. Reply once, from what you actually see "
+                            f"in it."
+                        )
 
             elif name == "close_camera":
                 self.ui.stop_camera_stream()
@@ -1450,6 +1690,20 @@ class JarvisLive:
                         "response": None, "session_memory": None}
                 r = await loop.run_in_executor(None, lambda: self._action_registry.run(name, args, _ctx))
                 result = r or "Done."
+                # A multi-step job now owns a workspace and a memory scope.
+                # Bind them so a follow-up "save that in the task" or a later
+                # orchestrate_task call lands in the same place instead of
+                # personal memory.
+                if name == "orchestrate_task":
+                    try:
+                        from core.agent_workspace import get_last_workspace
+                        ws = get_last_workspace()
+                        if ws is not None:
+                            self._active_agent_scope = ws.scope
+                            self._active_task_scope = ws.scope
+                            print(f"[Agent] Active workspace: {ws.id}")
+                    except Exception as e:
+                        print(f"[Agent] Could not bind workspace: {e}")
                 # web_search: mirror results to the on-screen content panel
                 if (name == "web_search" and r
                         and not r.startswith("No results")
@@ -1751,6 +2005,12 @@ class JarvisLive:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
                                 in_buf.append(txt)
+                                # Keep a rolling copy outside the local buffer so
+                                # tool dispatch can classify the request while
+                                # the turn is still in flight.
+                                self._last_user_text = (
+                                    f"{self._last_user_text} {txt}".strip()[-600:]
+                                )
                                 self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:
@@ -1778,6 +2038,7 @@ class JarvisLive:
                                         "ts": datetime.now().isoformat(),
                                     }))
                             in_buf = []
+                            self._last_user_text = ""
 
                             full_out = " ".join(out_buf).strip()
                             # Second line of defence: even if a repeat slips
@@ -2474,6 +2735,23 @@ class JarvisLive:
         )
         set_trim_notifier(self.ui.write_log)
 
+        # Drive session: raise the on-screen Drive HUD (goal + step + STOP) and
+        # mirror each step into the activity log. STOP on the banner, Escape,
+        # and the interrupt button all share interrupt() → cancel_active().
+        from core.drive import get_drive_session
+        drive = get_drive_session()
+        def _drive_listener(state: dict) -> None:
+            if state.get("active"):
+                goal = state.get("goal", "")
+                action = state.get("action", "")
+                self.ui.update_drive(goal, action, state.get("started_at", 0.0))
+                self.ui.write_log(f"AGENT: {action}" if action else "AGENT: Working…")
+            else:
+                reason = state.get("reason", "done")
+                self.ui.hide_drive()
+                self.ui.write_log(f"AGENT: Stopped — {reason}")
+        drive.add_listener(_drive_listener)
+
         # Tell the device picker the exact rates the streams open at, from the
         # constants that actually open them — so it can never list a device that
         # cannot be opened at them.
@@ -2542,7 +2820,11 @@ class JarvisLive:
 
                     async def _send_and_arm(*a, **kw):
                         result = await _orig_send(*a, **kw)
-                        self._arm_stall()
+                        # A context-only append (turn_complete=False) is not a
+                        # turn: nothing is expected back, so arming the stall
+                        # watchdog here would manufacture a fake disconnect.
+                        if kw.get("turn_complete", True):
+                            self._arm_stall()
                         return result
 
                     session.send_client_content = _send_and_arm

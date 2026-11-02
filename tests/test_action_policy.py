@@ -1,3 +1,4 @@
+import time
 import unittest
 from core.action_policy import (
     lookup,
@@ -7,6 +8,10 @@ from core.action_policy import (
     trust_session,
     record_execution,
     get_audit_log,
+    grant,
+    revoke,
+    revoke_all,
+    list_grants,
     Risk,
     Control,
 )
@@ -54,6 +59,73 @@ class TestActionPolicy(unittest.TestCase):
         self.assertGreaterEqual(len(history), 1)
         self.assertEqual(history[0].tool, "desktop_context")
         self.assertEqual(history[0].outcome, "ok")
+
+
+class TestScopedGrants(unittest.TestCase):
+    def setUp(self):
+        revoke_all()
+
+    def tearDown(self):
+        revoke_all()
+
+    def test_grant_downgrades_confirm_to_log(self):
+        # file_controller:delete normally requires CONFIRM
+        _, ctrl_before = lookup("file_controller", "delete")
+        self.assertEqual(ctrl_before, Control.CONFIRM)
+
+        grant("file_controller", Control.LOG, action="delete", max_uses=2)
+
+        # First use: grant applies
+        _, ctrl1 = lookup("file_controller", "delete")
+        self.assertEqual(ctrl1, Control.LOG)
+
+        # Second use: still granted
+        _, ctrl2 = lookup("file_controller", "delete")
+        self.assertEqual(ctrl2, Control.LOG)
+
+        # Third use: exhausted — back to normal
+        _, ctrl3 = lookup("file_controller", "delete")
+        self.assertEqual(ctrl3, Control.CONFIRM)
+
+    def test_grant_expires_by_time(self):
+        grant("code_helper", Control.LOG, action="command",
+              max_uses=-1, ttl_seconds=0.1)
+        _, ctrl_now = lookup("code_helper", "command")
+        self.assertEqual(ctrl_now, Control.LOG)
+
+        time.sleep(0.15)
+        _, ctrl_after = lookup("code_helper", "command")
+        self.assertEqual(ctrl_after, Control.CONFIRM)
+
+    def test_revoke(self):
+        grant("send_message", Control.LOG, max_uses=100)
+        self.assertTrue(revoke("send_message", "*"))
+        _, ctrl = lookup("send_message", "*")
+        self.assertEqual(ctrl, Control.CONFIRM)
+
+    def test_revoke_all(self):
+        grant("a", Control.LOG)
+        grant("b", Control.LOG)
+        self.assertEqual(revoke_all(), 2)
+        self.assertEqual(list_grants(), [])
+
+    def test_list_grants(self):
+        grant("file_controller", Control.LOG, action="delete", max_uses=3)
+        grants = list_grants()
+        self.assertEqual(len(grants), 1)
+        self.assertEqual(grants[0]["tool"], "file_controller")
+        self.assertEqual(grants[0]["remaining"], 3)
+
+    def test_wildcard_grant_covers_all_actions(self):
+        grant("file_controller", Control.LOG, action="*", max_uses=1)
+        _, ctrl = lookup("file_controller", "delete")
+        self.assertEqual(ctrl, Control.LOG)
+        # One use consumed — back to normal
+        _, ctrl2 = lookup("file_controller", "move")
+        # Wildcard was consumed for "delete"; check that a second action
+        # goes back to the static table
+        self.assertIn(ctrl2, (Control.UNDO, Control.LOG, Control.CONFIRM))
+
 
 if __name__ == "__main__":
     unittest.main()

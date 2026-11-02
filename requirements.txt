@@ -13,6 +13,7 @@
 PyQt6>=6.6,<7
 sounddevice>=0.4,<1
 numpy>=1.24,<3
+scipy>=1.11,<2            # speaker_verifier: MFCC/DCT feature extraction
 google-genai>=2.8.0,<3
 # Declared even though google-genai already installs it. providers/ imports it
 # directly, and a package you import is a package you depend on — relying on
@@ -45,6 +46,7 @@ pyperclip
 pillow>=10,<13
 opencv-python>=4.8,<5
 mss>=9,<11
+pytesseract>=0.3.13      # screen OCR; needs the `tesseract` binary on PATH
 
 # ── System, files & documents ─────────────────────────────────────────────────
 psutil>=5.9,<8

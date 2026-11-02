@@ -20,6 +20,13 @@ WHY THIS EXISTS
         possible failure and precisely why this reads as "the assistant is
         broken" rather than "the platform does not permit this".
 
+        Wayland is not uniformly impossible, though. Each compositor offers a
+        sanctioned route, and this module probes for those instead of giving
+        up: `grim` captures via wlr-screencopy, niri/Hyprland/sway expose IPC
+        for window focus, and `wtype`/`ydotool` inject input through the
+        compositor or uinput. What remains impossible is injection into a
+        native app that refuses it, and that is what the notes report.
+
     macOS / PERMISSIONS
         Driving the keyboard needs Accessibility, and capturing the screen
         needs Screen Recording. Both are off until the user grants them in
@@ -118,20 +125,42 @@ def detect() -> Support:
         return support
 
     if session == "wayland":
-        # The whole point of Wayland is that one client cannot drive another.
-        # XWayland covers apps that ask for X11, but synthetic input into
-        # native Wayland windows is not available to us at all.
-        support.can_control_input = False
-        support.can_capture_screen = False
-        support.can_focus_windows = False
-        support.notes.append(
-            "This is a Wayland session, which does not let one program type, "
-            "click, capture the screen or raise another program's window — by "
-            "design, not by fault. Opening applications, files, the web, "
-            "memory and the whole voice pipeline are unaffected. Logging out "
-            "and choosing an Xorg session at the login screen restores the "
-            "rest."
+        # Wayland forbids the X11 free-for-all, but each compositor ships its
+        # own sanctioned route. Report what is actually installed rather than
+        # declaring the whole session incapable: on this machine grim captures,
+        # niri focuses windows, and wtype types.
+        has_grim = bool(shutil.which("grim"))
+        has_typer = any(shutil.which(t) for t in ("wtype", "ydotool", "dotool"))
+        has_compositor_ipc = any(
+            shutil.which(t) for t in ("niri", "hyprctl", "swaymsg")
         )
+
+        support.can_capture_screen = has_grim
+        support.can_control_input = has_typer
+        support.can_focus_windows = has_compositor_ipc
+
+        if not has_grim:
+            support.notes.append(
+                "grim is not installed, so the screen cannot be captured on this "
+                "Wayland session. Install grim (pacman -S grim) to enable vision."
+            )
+        if not has_typer:
+            support.notes.append(
+                "No Wayland input tool was found, so typing and key presses are "
+                "unavailable. Install wtype (pacman -S wtype) — ydotool also works "
+                "if its daemon is running."
+            )
+        if not has_compositor_ipc:
+            support.notes.append(
+                "No supported compositor IPC was found (niri, Hyprland or sway), "
+                "so an already-running window cannot be raised or inspected."
+            )
+        if support.fully_capable:
+            support.notes.append(
+                "Wayland is handled through the compositor's own tools: grim for "
+                "capture, the compositor IPC for windows, and wtype/ydotool for "
+                "input. Some native apps may still refuse synthetic input."
+            )
         return support
 
     # X11: everything is possible, but two small tools carry window focus.
@@ -156,13 +185,13 @@ def describe_for_model(support: Support) -> list[str]:
     if not support.can_control_input:
         lines.append(
             "- You CANNOT type, click, press keys or move the mouse in this "
-            "session: this operating system does not permit one program to "
-            "drive another. Do not attempt it and do not report having done "
-            "it — say plainly that this machine does not allow it.")
+            "session: the input tool this desktop needs is not installed. Do "
+            "not attempt it and do not report having done it — say plainly "
+            "which tool is missing.")
     if not support.can_capture_screen:
         lines.append(
-            "- You CANNOT see the screen in this session, for the same reason. "
-            "Say so rather than describing anything.")
+            "- You CANNOT see the screen in this session because the capture "
+            "tool is not installed. Say so rather than describing anything.")
     if not support.can_focus_windows and support.can_control_input:
         lines.append(
             "- You cannot bring an already-running application to the front "
