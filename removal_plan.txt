@@ -1,0 +1,17 @@
+Files to remove:
+- main.py (Qt UI entry point)
+- ui.py (Qt UI components)
+- All Qt-related modules (dashboard, video, clipboard, audio devices, etc.)
+- systemd/mark-lv.service
+- ~/.config/autostart/jarvis.desktop
+
+Files to keep:
+- core/ (brain, screen_context, drive, task_orchestrator, action_policy, layered_memory, agent_workspace, confirm)
+- tests/ (keep core tests)
+- requirements.txt
+- README.md (update this)
+- setup.py (update this)
+- config/ (keep config files)
+- memory/ (keep memory files)
+- core/drive.py (keep)
+- core/task_orchestrator.py (keep)
