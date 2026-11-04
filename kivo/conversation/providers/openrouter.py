@@ -149,14 +149,22 @@ class OpenAICompatibleProvider(LLMProvider):
         except Exception as exc:
             return False, str(exc)
 
-    async def generate(self, messages: list[dict], **kwargs) -> str:
-        """Non-streaming text completion."""
+    async def generate(self, messages: list[dict], tools: Optional[list[dict]] = None, **kwargs) -> Any:
+        """Non-streaming text completion or structured response."""
         chunks = []
-        async for chunk in self.stream(messages, **kwargs):
-            chunks.append(chunk)
-        return "".join(chunks).strip()
+        tool_calls = []
+        async for chunk in self.stream(messages, tools=tools, **kwargs):
+            if isinstance(chunk, dict) and chunk.get("type") == "tool_calls":
+                tool_calls.extend(chunk.get("tool_calls", []))
+            elif isinstance(chunk, str):
+                chunks.append(chunk)
 
-    async def stream(self, messages: list[dict], **kwargs) -> AsyncIterator[str]:
+        content = "".join(chunks).strip()
+        if tool_calls:
+            return {"content": content, "tool_calls": tool_calls}
+        return content
+
+    async def stream(self, messages: list[dict], tools: Optional[list[dict]] = None, **kwargs) -> AsyncIterator[Any]:
         """Stream response chunks from the OpenAI-compatible endpoint using SSE."""
         client = self._get_client()
         headers = self._build_headers()
@@ -169,6 +177,11 @@ class OpenAICompatibleProvider(LLMProvider):
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 1024),
         }
+        if tools:
+            payload["tools"] = tools
+
+        tool_call_slots: dict[int, dict] = {}
+        saw_tool_calls = False
 
         try:
             async with client.stream(
@@ -213,12 +226,56 @@ class OpenAICompatibleProvider(LLMProvider):
                             choices = data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
-                                # Plain text responses only — ignore tool calls
+
+                                # Reassemble streaming tool calls
+                                tcs = delta.get("tool_calls")
+                                if tcs and isinstance(tcs, list):
+                                    saw_tool_calls = True
+                                    for tc in tcs:
+                                        idx = tc.get("index", 0)
+                                        slot = tool_call_slots.setdefault(
+                                            idx, {"id": "", "name": "", "arguments": ""}
+                                        )
+                                        if tc.get("id"):
+                                            slot["id"] = tc["id"]
+                                        fn = tc.get("function", {})
+                                        if fn.get("name"):
+                                            slot["name"] += fn["name"]
+                                        if fn.get("arguments"):
+                                            slot["arguments"] += fn["arguments"]
+
+                                # Text delta
                                 content = delta.get("content")
                                 if content:
                                     yield content
                         except json.JSONDecodeError:
                             continue
+
+                # Emit reassembled tool calls upon stream end
+                if saw_tool_calls:
+                    from kivo.agent.tool_schema import ToolCall
+                    parsed_calls = []
+                    for idx in sorted(tool_call_slots):
+                        slot = tool_call_slots[idx]
+                        if not slot["name"]:
+                            continue
+                        raw_args = slot["arguments"].strip() or "{}"
+                        try:
+                            args_dict = json.loads(raw_args)
+                        except Exception:
+                            args_dict = {}
+                        if not isinstance(args_dict, dict):
+                            args_dict = {"value": args_dict}
+                        call_id = slot["id"] or f"call_{idx}"
+                        parsed_calls.append(
+                            ToolCall(
+                                tool_call_id=call_id,
+                                tool_name=slot["name"],
+                                arguments=args_dict,
+                            )
+                        )
+                    if parsed_calls:
+                        yield {"type": "tool_calls", "tool_calls": parsed_calls}
 
         except httpx.ConnectTimeout as exc:
             raise ProviderTimeoutError(f"Connection to {self._provider_name.title()} timed out.") from exc

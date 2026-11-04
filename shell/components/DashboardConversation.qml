@@ -484,6 +484,52 @@ Item {
             }
         }
 
+        // ── Active Tool Execution Activity Banner ────────────────────────────
+        Rectangle {
+            width: parent.width
+            height: 28
+            visible: page.ipc && page.ipc.activeAgentTool && page.ipc.activeAgentTool.length > 0
+            radius: 8
+            color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.15)
+            border.width: 1
+            border.color: Theme.accent
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 10
+                anchors.rightMargin: 10
+                spacing: 6
+
+                Rectangle {
+                    width: 6
+                    height: 6
+                    radius: 3
+                    color: Theme.mint
+                    SequentialAnimation on opacity {
+                        running: page.ipc && page.ipc.activeAgentTool && page.ipc.activeAgentTool.length > 0
+                        loops: Animation.Infinite
+                        NumberAnimation { from: 1.0; to: 0.2; duration: 400 }
+                        NumberAnimation { from: 0.2; to: 1.0; duration: 400 }
+                    }
+                }
+
+                Text {
+                    text: page.ipc ? ("⚙ KIVO is executing " + page.ipc.activeAgentTool + "…") : ""
+                    font.pixelSize: Theme.fontCaption - 1
+                    font.bold: true
+                    color: Theme.accent
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    text: "read-only tool"
+                    font.pixelSize: Theme.fontCaption - 2
+                    color: Theme.textMuted
+                }
+            }
+        }
+
         // ── Message Thread (ListView) ───────────────────────────────────────
         Rectangle {
             width: parent.width

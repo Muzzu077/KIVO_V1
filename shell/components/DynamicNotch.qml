@@ -719,6 +719,19 @@ Item {
                                     "Enable in Dashboard to chat with OpenRouter", 3500, false)
             }
         }
+
+        function onAgentToolStarted(name, callId) {
+            var label = name === "get_current_time" ? "Checking current time…"
+                : (name === "get_system_overview" ? "Checking system overview…" : "Running " + name + "…")
+            notch.showTransient("thinking", "Tool Active", label, 4000, false)
+        }
+
+        function onAgentToolCompleted(result) {
+            if (result && !result.success) {
+                notch.showTransient("error", "Tool Failed",
+                                    result.error_message || "Tool execution failed", 3000, false)
+            }
+        }
     }
 
     Timer {

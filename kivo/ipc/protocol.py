@@ -127,6 +127,10 @@ EVENT_NAMES = (
     "conversation.response_failed",
     "conversation_cancelled",
     "conversation.cancelled",
+    "agent_tool_started",
+    "agent.tool_started",
+    "agent_tool_completed",
+    "agent.tool_completed",
     "error",
 )
 EVENT_NAME_SET = frozenset(EVENT_NAMES)

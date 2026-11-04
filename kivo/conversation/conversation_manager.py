@@ -6,6 +6,10 @@ import threading
 import time
 from typing import Callable, Optional
 
+from kivo.agent.agent_runtime import AgentRuntime
+from kivo.agent.tool_registry import ToolRegistry
+from kivo.agent.tool_schema import ToolResult
+from kivo.agent import create_default_tool_registry
 from kivo.conversation.context_manager import ContextManager
 from kivo.conversation.conversation_config import (
     DEFAULT_OMNIROUTE_URL,
@@ -35,6 +39,7 @@ class ConversationManager:
         self,
         context_manager: Optional[ContextManager] = None,
         provider: Optional[LLMProvider] = None,
+        tool_registry: Optional[ToolRegistry] = None,
         on_state_change: Optional[Callable[[ConversationStatus], None]] = None,
         on_user_message: Optional[Callable[[Message], None]] = None,
         on_response_started: Optional[Callable[[str, str], None]] = None,
@@ -42,6 +47,8 @@ class ConversationManager:
         on_response_completed: Optional[Callable[[Message], None]] = None,
         on_response_failed: Optional[Callable[[str], None]] = None,
         on_cancelled: Optional[Callable[[], None]] = None,
+        on_tool_started: Optional[Callable[[str, str], None]] = None,
+        on_tool_completed: Optional[Callable[[ToolResult], None]] = None,
     ):
         self._cfg = load_conversation_config()
         self._context_manager = context_manager or ContextManager(
@@ -53,6 +60,12 @@ class ConversationManager:
         else:
             self._provider = self._create_provider_from_config(self._cfg)
 
+        self._tool_registry = tool_registry or create_default_tool_registry()
+        self._agent_runtime = AgentRuntime(
+            provider=self._provider,
+            registry=self._tool_registry,
+        )
+
         self._on_state_change = on_state_change
         self._on_user_message = on_user_message
         self._on_response_started = on_response_started
@@ -60,6 +73,8 @@ class ConversationManager:
         self._on_response_completed = on_response_completed
         self._on_response_failed = on_response_failed
         self._on_cancelled = on_cancelled
+        self._on_tool_started = on_tool_started
+        self._on_tool_completed = on_tool_completed
 
         self._lock = threading.Lock()
         self._state = "idle"
@@ -189,6 +204,8 @@ class ConversationManager:
             )
             old_prov = self._provider
             self._provider = self._create_provider_from_config(self._cfg)
+            if hasattr(self, "_agent_runtime"):
+                self._agent_runtime._provider = self._provider
 
         if hasattr(old_prov, "close"):
             try:
@@ -298,7 +315,38 @@ class ConversationManager:
             except Exception:
                 pass
 
-        accumulated: list[str] = []
+        def on_delta_callback(chunk: str, accumulated_text: str) -> None:
+            with self._lock:
+                self._state = "streaming"
+                self._last_preview = accumulated_text[:300]
+            if self._on_response_delta is not None:
+                try:
+                    self._on_response_delta(chunk, accumulated_text)
+                except Exception:
+                    pass
+
+        def on_tool_start_callback(tool_name: str, call_id: str) -> None:
+            with self._lock:
+                self._state = "thinking"
+                self._last_preview = f"KIVO is checking {tool_name}..."
+            self._notify_state()
+            if self._on_tool_started is not None:
+                try:
+                    self._on_tool_started(tool_name, call_id)
+                except Exception:
+                    pass
+
+        def on_tool_complete_callback(result: ToolResult) -> None:
+            with self._lock:
+                status_str = "completed" if result.success else "failed"
+                self._last_preview = f"Tool {result.tool_name} {status_str} ({result.execution_time}s)"
+            self._notify_state()
+            if self._on_tool_completed is not None:
+                try:
+                    self._on_tool_completed(result)
+                except Exception:
+                    pass
+
         try:
             current_task = asyncio.current_task()
             with self._lock:
@@ -306,26 +354,18 @@ class ConversationManager:
 
             temperature = float(self._cfg.get("temperature", 0.7))
             max_tokens = int(self._cfg.get("max_tokens", 1024))
-            model = str(self._cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free"))
+            model = str(self._cfg.get("model", "auto"))
 
-            async for chunk in self._provider.stream(
+            full_response = await self._agent_runtime.execute_turn(
                 messages,
+                provider=self._provider,
+                on_delta=on_delta_callback,
+                on_tool_started=on_tool_start_callback,
+                on_tool_completed=on_tool_complete_callback,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 model=model,
-            ):
-                accumulated.append(chunk)
-                accumulated_text = "".join(accumulated)
-
-                with self._lock:
-                    self._state = "streaming"
-                    self._last_preview = accumulated_text[:300]
-
-                if self._on_response_delta is not None:
-                    try:
-                        self._on_response_delta(chunk, accumulated_text)
-                    except Exception:
-                        pass
+            )
 
         except asyncio.CancelledError:
             with self._lock:
@@ -356,7 +396,7 @@ class ConversationManager:
         with self._lock:
             self._active_task = None
 
-        full_response = "".join(accumulated).strip()
+        full_response = (full_response or "").strip()
         if full_response:
             asst_msg = self._context_manager.add_assistant_message(full_response)
             with self._lock:

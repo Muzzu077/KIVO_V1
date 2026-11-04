@@ -11,12 +11,12 @@ class LLMProvider(ABC):
     """Abstract interface for LLM response generation engines."""
 
     @abstractmethod
-    async def generate(self, messages: list[dict], **kwargs) -> str:
-        """Generate a complete text response."""
+    async def generate(self, messages: list[dict], tools: Optional[list[dict]] = None, **kwargs) -> Any:
+        """Generate a complete text response or structured output."""
 
     @abstractmethod
-    async def stream(self, messages: list[dict], **kwargs) -> AsyncIterator[str]:
-        """Stream response tokens or deltas asynchronously."""
+    async def stream(self, messages: list[dict], tools: Optional[list[dict]] = None, **kwargs) -> AsyncIterator[Any]:
+        """Stream response tokens, deltas, or tool calls asynchronously."""
 
     @abstractmethod
     async def get_status(self) -> ProviderStatus:

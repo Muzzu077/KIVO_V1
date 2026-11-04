@@ -133,6 +133,11 @@ Scope {
     property var conversationHistory: []
     property var conversationAvailableModels: []
 
+    // ── Agent tool properties ──────────────────────────────────────────────
+    property string activeAgentTool: ""
+    property string activeAgentToolStatus: ""
+    property var toolExecutionLog: []
+
     // ── Signals ────────────────────────────────────────────────────────────
     signal statusUpdated()
     signal taskUpdated()
@@ -160,6 +165,8 @@ Scope {
     signal conversationResponseCompleted(var message)
     signal conversationResponseFailed(string error)
     signal conversationCancelled()
+    signal agentToolStarted(string name, string callId)
+    signal agentToolCompleted(var result)
 
     // ── Internal state ─────────────────────────────────────────────────────
     property bool _wantConnected: false
@@ -947,6 +954,19 @@ Scope {
             conversationState = "cancelled"
             streamingResponseAccumulated = ""
             conversationCancelled()
+            break
+        case "agent_tool_started":
+            activeAgentTool = _text(data, "tool_name", "")
+            activeAgentToolStatus = "running"
+            agentToolStarted(activeAgentTool, _text(data, "tool_call_id", ""))
+            break
+        case "agent_tool_completed":
+            activeAgentTool = ""
+            activeAgentToolStatus = data.success === true ? "completed" : "failed"
+            var tlog = Array.isArray(toolExecutionLog) ? toolExecutionLog.slice() : []
+            tlog.push(_copy(data))
+            toolExecutionLog = tlog
+            agentToolCompleted(data)
             break
         case "confirmation_required":
             // The backend confirmation gate is intentionally unbound.  Do not

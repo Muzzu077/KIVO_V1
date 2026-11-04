@@ -205,6 +205,8 @@ class KivoApp:
             on_response_completed=self._on_conversation_response_completed,
             on_response_failed=self._on_conversation_response_failed,
             on_cancelled=self._on_conversation_cancelled,
+            on_tool_started=self._on_agent_tool_started,
+            on_tool_completed=self._on_agent_tool_completed,
         )
 
         self._components["audio_device_manager"] = device_manager
@@ -460,6 +462,17 @@ class KivoApp:
         if self._runtime_state is not None:
             self._runtime_state.set_assistant_state("idle", "generation cancelled")
         self._publish("conversation_cancelled", {})
+
+    def _on_agent_tool_started(self, tool_name: str, call_id: str) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("thinking", f"checking {tool_name}")
+        self._publish("agent_tool_started", {
+            "tool_name": tool_name,
+            "tool_call_id": call_id,
+        })
+
+    def _on_agent_tool_completed(self, result) -> None:
+        self._publish("agent_tool_completed", result.to_dict())
 
     @staticmethod
     def _screen_snapshot(frame) -> dict:
