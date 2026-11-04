@@ -103,6 +103,34 @@ Item {
                 }
                 Item { width: 200; height: 4 }
                 Item {
+                    id: navConversation
+                    width: 200
+                    height: 44
+                    property string page: "conversation"
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 12
+                        color: dash.currentPage === navConversation.page ? Theme.accentDim : (navConvMouse.containsMouse ? Theme.surfaceHover : Theme.surfaceSunken)
+                        border.width: 1
+                        border.color: dash.currentPage === navConversation.page ? Theme.accentDim : Theme.divider
+                    }
+                    MouseArea {
+                        id: navConvMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onClicked: dash.selectPage(navConversation.page)
+                    }
+                    Text {
+                        x: 14
+                        y: 12
+                        text: "Conversation"
+                        font.pixelSize: Theme.fontBody
+                        font.bold: dash.currentPage === navConversation.page
+                        color: dash.currentPage === navConversation.page ? Theme.textPrimary : Theme.textSecondary
+                    }
+                }
+                Item { width: 200; height: 4 }
+                Item {
                     id: navAudio
                     width: 200
                     height: 44
@@ -257,6 +285,12 @@ Item {
                 anchors.fill: parent
                 ipc: dash.ipc
                 visible: dash.currentPage === "overview"
+            }
+            DashboardConversation {
+                id: conversationPage
+                anchors.fill: parent
+                ipc: dash.ipc
+                visible: dash.currentPage === "conversation"
             }
             DashboardAudio {
                 id: audioPage

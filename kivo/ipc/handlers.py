@@ -24,6 +24,7 @@ class IPCHandlers:
         audio_capture_manager=None,
         audio_ingress=None,
         transcription_manager=None,
+        conversation_manager=None,
     ):
         self._state = state
         self._drive = drive
@@ -32,6 +33,7 @@ class IPCHandlers:
         self._audio_cm = audio_capture_manager
         self._audio_ingress = audio_ingress
         self._stt = transcription_manager
+        self._conv = conversation_manager
 
     def get_status(self) -> dict:
         snapshot = self._state.snapshot()
@@ -54,6 +56,8 @@ class IPCHandlers:
             status_dict["audio"] = self.audio_get_status()
         if self._stt is not None:
             status_dict["stt"] = self.stt_get_status()
+        if self._conv is not None:
+            status_dict["conversation"] = self.conversation_get_status()
         return status_dict
 
     def get_current_task(self) -> dict:
@@ -73,6 +77,9 @@ class IPCHandlers:
         if self._stt is not None:
             data["stt"] = self.stt_get_status()
             data["transcriptions"] = self._stt.get_history(limit=10)
+        if self._conv is not None:
+            data["conversation"] = self.conversation_get_status()
+            data["conversation_history"] = self.conversation_get_history({"limit": 20}).get("history", [])
         return data
 
     def cancel_active_task(self) -> dict:
@@ -216,6 +223,60 @@ class IPCHandlers:
         if self._stt is None:
             return {"ok": False}
         return {"ok": True}
+
+    # ── Conversation operations ────────────────────────────────────────────
+
+    def conversation_get_status(self) -> dict:
+        if self._conv is None:
+            return {
+                "state": "unavailable",
+                "active_conversation_id": "",
+                "message_count": 0,
+                "cloud_enabled": False,
+                "provider": {"provider_name": "none", "model": "", "cloud_enabled": False, "available": False},
+                "last_response_preview": "",
+                "error_message": "Conversation subsystem is not initialized",
+            }
+        return self._conv.get_status().to_dict()
+
+    def conversation_get_history(self, params: dict | None = None) -> dict:
+        if self._conv is None:
+            return {"history": []}
+        return {"history": self._conv.get_history()}
+
+    def conversation_submit(self, params: dict | None = None) -> dict:
+        if self._conv is None:
+            return {"ok": False, "error": "Conversation subsystem is not initialized"}
+        if not params or not isinstance(params, dict):
+            return {"ok": False, "error": "Missing parameters"}
+        text = str(params.get("text", "")).strip()
+        if not text:
+            return {"ok": False, "error": "Text cannot be empty"}
+        submitted = self._conv.submit_text(text)
+        return {"ok": submitted, "status": self.conversation_get_status()}
+
+    def conversation_cancel(self) -> dict:
+        if self._conv is None:
+            return {"ok": False}
+        cancelled = self._conv.cancel_active()
+        return {"ok": cancelled}
+
+    def conversation_clear(self) -> dict:
+        if self._conv is None:
+            return {"ok": False}
+        self._conv.clear()
+        return {"ok": True}
+
+    def conversation_update_config(self, params: dict | None = None) -> dict:
+        if self._conv is None:
+            return {"ok": False, "error": "Conversation subsystem is not initialized"}
+        if not params or not isinstance(params, dict):
+            return {"ok": False, "error": "Missing parameters"}
+        if "cloud_enabled" in params:
+            self._conv.set_cloud_enabled(bool(params["cloud_enabled"]))
+        if "model" in params and isinstance(params["model"], str) and params["model"].strip():
+            self._conv.set_model(params["model"].strip())
+        return {"ok": True, "status": self.conversation_get_status()}
 
     def _drive_snapshot(self) -> dict:
         state = self._drive.snapshot()

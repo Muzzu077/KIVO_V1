@@ -124,6 +124,14 @@ Scope {
     property var lastTranscription: null
     property var transcriptionHistory: []
 
+    // ── Conversation properties ────────────────────────────────────────────
+    property var conversationStatus: null
+    property string conversationState: "idle"
+    property bool conversationCloudEnabled: false
+    property string conversationModel: ""
+    property string streamingResponseAccumulated: ""
+    property var conversationHistory: []
+
     // ── Signals ────────────────────────────────────────────────────────────
     signal statusUpdated()
     signal taskUpdated()
@@ -144,6 +152,13 @@ Scope {
     signal sttTranscriptionStarted(string captureId)
     signal sttTranscriptionCompleted(var result)
     signal sttTranscriptionFailed(string error)
+    signal conversationStatusUpdated(var status)
+    signal conversationUserMessage(var message)
+    signal conversationResponseStarted(string messageId, string conversationId)
+    signal conversationResponseDelta(string delta, string accumulated)
+    signal conversationResponseCompleted(var message)
+    signal conversationResponseFailed(string error)
+    signal conversationCancelled()
 
     // ── Internal state ─────────────────────────────────────────────────────
     property bool _wantConnected: false
@@ -507,6 +522,14 @@ Scope {
             if (_isObject(payload) && Array.isArray(payload.transcriptions)) {
                 transcriptionHistory = payload.transcriptions
             }
+            if (_isObject(payload) && _isObject(payload.conversation)) {
+                conversationStatus = payload.conversation
+                conversationState = _text(payload.conversation, "state", "idle")
+                conversationCloudEnabled = payload.conversation.cloud_enabled === true
+            }
+            if (_isObject(payload) && Array.isArray(payload.conversation_history)) {
+                conversationHistory = payload.conversation_history
+            }
             if (typeof callback === "function")
                 callback(null, payload)
         })
@@ -608,6 +631,66 @@ Scope {
         return request("stt_update_config", cfg, function(error, result) {
             if (!error && _isObject(result) && result.status) {
                 sttStatus = result.status
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    // ── Conversation control ───────────────────────────────────────────────
+    function conversationGetStatus(callback) {
+        return request("conversation_get_status", null, function(error, result) {
+            if (!error && _isObject(result)) {
+                conversationStatus = result
+                conversationState = _text(result, "state", "idle")
+                conversationCloudEnabled = result.cloud_enabled === true
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function conversationGetHistory(callback) {
+        return request("conversation_get_history", null, function(error, result) {
+            if (!error && _isObject(result) && Array.isArray(result.history)) {
+                conversationHistory = result.history
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function conversationSubmit(text, callback) {
+        return request("conversation_submit", { "text": String(text) }, function(error, result) {
+            if (!error && _isObject(result) && result.status) {
+                conversationStatus = result.status
+                conversationState = _text(result.status, "state", "idle")
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function conversationCancel(callback) {
+        return request("conversation_cancel", null, callback)
+    }
+
+    function conversationClear(callback) {
+        return request("conversation_clear", null, function(error, result) {
+            if (!error) {
+                conversationHistory = []
+                streamingResponseAccumulated = ""
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function conversationUpdateConfig(cfg, callback) {
+        return request("conversation_update_config", cfg, function(error, result) {
+            if (!error && _isObject(result) && result.status) {
+                conversationStatus = result.status
+                conversationCloudEnabled = result.status.cloud_enabled === true
             }
             if (typeof callback === "function")
                 callback(error, result)
@@ -802,6 +885,50 @@ Scope {
         case "stt_transcription_failed":
             sttTranscribing = false
             sttTranscriptionFailed(_text(data, "error", "Transcription failed"))
+            break
+        case "conversation_state_changed":
+            conversationStatus = _copy(data)
+            conversationState = _text(data, "state", "idle")
+            conversationCloudEnabled = data.cloud_enabled === true
+            conversationStatusUpdated(conversationStatus)
+            break
+        case "conversation_user_message":
+            if (_isObject(data)) {
+                var hist = Array.isArray(conversationHistory) ? conversationHistory.slice() : []
+                hist.push(_copy(data))
+                conversationHistory = hist
+                conversationUserMessage(data)
+            }
+            break
+        case "conversation_response_started":
+            streamingResponseAccumulated = ""
+            conversationState = "thinking"
+            conversationResponseStarted(_text(data, "message_id", ""), _text(data, "conversation_id", ""))
+            break
+        case "conversation_response_delta":
+            conversationState = "streaming"
+            streamingResponseAccumulated = _text(data, "accumulated", "")
+            conversationResponseDelta(_text(data, "delta", ""), streamingResponseAccumulated)
+            break
+        case "conversation_response_completed":
+            conversationState = "idle"
+            streamingResponseAccumulated = ""
+            if (_isObject(data)) {
+                var hist2 = Array.isArray(conversationHistory) ? conversationHistory.slice() : []
+                hist2.push(_copy(data))
+                conversationHistory = hist2
+                conversationResponseCompleted(data)
+            }
+            break
+        case "conversation_response_failed":
+            conversationState = "failed"
+            streamingResponseAccumulated = ""
+            conversationResponseFailed(_text(data, "error", "Response generation failed"))
+            break
+        case "conversation_cancelled":
+            conversationState = "cancelled"
+            streamingResponseAccumulated = ""
+            conversationCancelled()
             break
         case "confirmation_required":
             // The backend confirmation gate is intentionally unbound.  Do not

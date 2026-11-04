@@ -176,6 +176,15 @@ ShellRoot {
         function cancelCapture(): void { notch.cancelPushToTalk() }
         function audioState(): string { return notch.audioState }
 
+        function submitChat(text: string): void {
+            if (kivoIpc && kivoIpc.conversationSubmit)
+                kivoIpc.conversationSubmit(text, null)
+        }
+        function cancelChat(): void {
+            if (kivoIpc && kivoIpc.conversationCancel)
+                kivoIpc.conversationCancel(null)
+        }
+
         function snapshot(): string {
             return JSON.stringify({
                 state: notch.visualState,
@@ -204,6 +213,9 @@ ShellRoot {
                 audioCapturing: notch.audioState === "capturing",
                 sttTranscribing: notch.ipc ? notch.ipc.sttTranscribing : false,
                 lastTranscript: notch.ipc ? notch.ipc.lastTranscript : "",
+                lastAssistantResponse: notch.ipc ? notch.ipc.lastAssistantResponse : "",
+                conversationState: notch.ipc ? notch.ipc.conversationState : "idle",
+                conversationCloudEnabled: notch.ipc ? notch.ipc.conversationCloudEnabled : false,
                 panelWidth: panel.width,
                 panelHeight: panel.height,
                 panelImplicitWidth: panel.implicitWidth,

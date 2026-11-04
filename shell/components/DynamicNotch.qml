@@ -166,7 +166,13 @@ Item {
     readonly property string stateLabel: {
         switch (visualState) {
         case "listening": return notch.audioState === "capturing" ? "Recording" : "Listening"
-        case "thinking": return (notch.ipc && notch.ipc.sttTranscribing) ? "Understanding…" : "Thinking"
+        case "thinking": {
+            if (notch.ipc && notch.ipc.sttTranscribing)
+                return "Understanding…"
+            if (notch.ipc && notch.ipc.conversationState === "streaming")
+                return "Responding…"
+            return "Thinking"
+        }
         case "speaking": return "Speaking"
         case "driving": return "Driving"
         case "success": return "Done"
@@ -194,7 +200,13 @@ Item {
     readonly property string collapsedLabel: {
         switch (visualState) {
         case "listening": return notch.audioState === "capturing" ? "Recording…" : "Listening"
-        case "thinking": return (notch.ipc && notch.ipc.sttTranscribing) ? "Understanding…" : "Thinking"
+        case "thinking": {
+            if (notch.ipc && notch.ipc.sttTranscribing)
+                return "Understanding…"
+            if (notch.ipc && notch.ipc.conversationState === "streaming")
+                return "Responding…"
+            return "Thinking"
+        }
         case "speaking": return "Speaking"
         case "driving": return taskTitle.length > 0 ? taskTitle : "Working"
         case "success": return "Done"
@@ -684,6 +696,28 @@ Item {
         function onSttTranscriptionFailed(error) {
             notch.showTransient("error", "Transcription failed",
                                 error || "Speech recognition error", 3500, false)
+        }
+
+        function onConversationResponseStarted(msgId, convId) {
+            notch.showTransient("thinking", "Thinking…",
+                                "Generating response…", 4000, false)
+        }
+
+        function onConversationResponseCompleted(message) {
+            var preview = message && message.content ? message.content.substring(0, 70) : "Answer ready"
+            notch.showTransient("success", "KIVO", preview, 3500, false)
+        }
+
+        function onConversationResponseFailed(error) {
+            notch.showTransient("error", "AI Response Failed",
+                                error || "Provider error", 3500, false)
+        }
+
+        function onConversationStatusUpdated(status) {
+            if (status && status.state === "cloud_disabled") {
+                notch.showTransient("neutral", "Cloud AI Disabled",
+                                    "Enable in Dashboard to chat with OpenRouter", 3500, false)
+            }
         }
     }
 

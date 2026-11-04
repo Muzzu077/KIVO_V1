@@ -195,10 +195,23 @@ class KivoApp:
         )
         transcription_mgr.start()
 
+        # Initialize Conversational Brain (ConversationManager)
+        from kivo.conversation import ConversationManager
+        conv_mgr = ConversationManager(
+            on_state_change=self._on_conversation_state_change,
+            on_user_message=self._on_conversation_user_message,
+            on_response_started=self._on_conversation_response_started,
+            on_response_delta=self._on_conversation_response_delta,
+            on_response_completed=self._on_conversation_response_completed,
+            on_response_failed=self._on_conversation_response_failed,
+            on_cancelled=self._on_conversation_cancelled,
+        )
+
         self._components["audio_device_manager"] = device_manager
         self._components["audio_capture_manager"] = capture_manager
         self._components["audio_ingress"] = ingress
         self._components["transcription_manager"] = transcription_mgr
+        self._components["conversation_manager"] = conv_mgr
 
     def _init_ipc(self) -> None:
         from kivo.ipc.handlers import IPCHandlers
@@ -217,6 +230,7 @@ class KivoApp:
                 audio_capture_manager=self._components.get("audio_capture_manager"),
                 audio_ingress=self._components.get("audio_ingress"),
                 transcription_manager=self._components.get("transcription_manager"),
+                conversation_manager=self._components.get("conversation_manager"),
             )
             server = IPCServer(
                 self._socket_path,
@@ -389,10 +403,63 @@ class KivoApp:
         })
         self._publish("stt_transcription_completed", result.to_dict())
 
+        # Forward completed transcript to the conversation manager
+        conv = self._components.get("conversation_manager")
+        if conv is not None and result.text:
+            conv.submit_transcript(result)
+
     def _on_stt_failed(self, error: str) -> None:
         if self._runtime_state is not None:
             self._runtime_state.set_assistant_state("idle", "transcription failed")
         self._publish("stt_transcription_failed", {"error": error})
+
+    # ── Conversation callbacks ─────────────────────────────────────────────
+
+    def _on_conversation_state_change(self, status) -> None:
+        state = status.state
+        if state == "thinking":
+            if self._runtime_state is not None:
+                self._runtime_state.set_assistant_state("thinking", "formulating response")
+        elif state == "streaming":
+            if self._runtime_state is not None:
+                self._runtime_state.set_assistant_state("thinking", "responding")
+        elif state in ("completed", "idle"):
+            if self._runtime_state is not None and self._runtime_state.snapshot()["assistant_state"] == "thinking":
+                self._runtime_state.set_assistant_state("idle", "response ready")
+        self._publish("conversation_state_changed", status.to_dict())
+
+    def _on_conversation_user_message(self, message) -> None:
+        self._publish("conversation_user_message", message.to_dict())
+
+    def _on_conversation_response_started(self, message_id: str, conversation_id: str) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("thinking", "generating answer")
+        self._publish("conversation_response_started", {
+            "message_id": message_id,
+            "conversation_id": conversation_id,
+        })
+
+    def _on_conversation_response_delta(self, delta: str, accumulated: str) -> None:
+        self._publish("conversation_response_delta", {
+            "delta": delta,
+            "accumulated": accumulated,
+        })
+
+    def _on_conversation_response_completed(self, message) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("idle", "response complete")
+        self._publish("assistant_response", {"content": message.content})
+        self._publish("conversation_response_completed", message.to_dict())
+
+    def _on_conversation_response_failed(self, error: str) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("idle", "response failed")
+        self._publish("conversation_response_failed", {"error": error})
+
+    def _on_conversation_cancelled(self) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("idle", "generation cancelled")
+        self._publish("conversation_cancelled", {})
 
     @staticmethod
     def _screen_snapshot(frame) -> dict:
@@ -485,6 +552,14 @@ class KivoApp:
         if confirm is not None:
             try:
                 confirm.bind(None, None, None)
+            except Exception:
+                pass
+
+        # Stop conversation manager and cancel in-flight requests
+        conv_mgr = self._components.get("conversation_manager")
+        if conv_mgr is not None:
+            try:
+                conv_mgr.close()
             except Exception:
                 pass
 

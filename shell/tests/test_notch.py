@@ -1167,6 +1167,44 @@ class NotchIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(snap.get("lastTranscript"), "Hello KIVO Assistant")
 
+    def test_conversation_events_and_assistant_response_state(self) -> None:
+        backend = self.start_backend()
+        shell = self.start_shell(backend)
+        shell.wait_state("idle")
+
+        # Simulate user speech turn
+        backend.publish(
+            "user_transcript",
+            {"text": "What is Python?", "language": "en"},
+        )
+        shell.wait_snapshot(lambda item: item.get("lastTranscript") == "What is Python?", timeout=8)
+
+        # Simulate LLM thinking and streaming
+        backend.publish(
+            "conversation_response_started",
+            {"message_id": "m-1", "conversation_id": "c-1"},
+        )
+        backend.publish(
+            "conversation_response_delta",
+            {"delta": "Python is ", "accumulated": "Python is "},
+        )
+        shell.wait_snapshot(lambda item: item.get("conversationState") == "streaming", timeout=8)
+
+        # Simulate response completion
+        backend.publish(
+            "assistant_response",
+            {"content": "Python is a programming language."},
+        )
+        backend.publish(
+            "conversation_response_completed",
+            {"role": "assistant", "content": "Python is a programming language.", "message_id": "m-1"},
+        )
+        snap = shell.wait_snapshot(
+            lambda item: item.get("lastAssistantResponse") == "Python is a programming language.",
+            timeout=8,
+        )
+        self.assertEqual(snap.get("lastAssistantResponse"), "Python is a programming language.")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

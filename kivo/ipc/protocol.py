@@ -61,6 +61,18 @@ REQUEST_OPERATIONS = frozenset({
     "stt.update_config",
     "stt_cancel",
     "stt.cancel",
+    "conversation_get_status",
+    "conversation.get_status",
+    "conversation_get_history",
+    "conversation.get_history",
+    "conversation_submit",
+    "conversation.submit",
+    "conversation_cancel",
+    "conversation.cancel",
+    "conversation_clear",
+    "conversation.clear",
+    "conversation_update_config",
+    "conversation.update_config",
 })
 
 EVENT_NAMES = (
@@ -97,6 +109,20 @@ EVENT_NAMES = (
     "stt.transcription_empty",
     "stt_transcription_failed",
     "stt.transcription_failed",
+    "conversation_state_changed",
+    "conversation.state_changed",
+    "conversation_user_message",
+    "conversation.user_message",
+    "conversation_response_started",
+    "conversation.response_started",
+    "conversation_response_delta",
+    "conversation.response_delta",
+    "conversation_response_completed",
+    "conversation.response_completed",
+    "conversation_response_failed",
+    "conversation.response_failed",
+    "conversation_cancelled",
+    "conversation.cancelled",
     "error",
 )
 EVENT_NAME_SET = frozenset(EVENT_NAMES)
@@ -228,6 +254,27 @@ def decode_request(body: bytes) -> Request:
             raise ProtocolError(
                 exc.code, exc.message, request_id=request_id
             ) from exc
+    elif operation in ("conversation_submit", "conversation.submit"):
+        try:
+            _validate_conversation_submit_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("conversation_update_config", "conversation.update_config"):
+        try:
+            _validate_conversation_update_config_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("conversation_get_history", "conversation.get_history"):
+        try:
+            _validate_stt_get_history_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
     elif params:
         raise ProtocolError(
             "invalid_params",
@@ -287,6 +334,33 @@ def _validate_stt_get_history_params(params: dict[str, Any]) -> None:
     limit = params.get("limit")
     if limit is not None and not isinstance(limit, (int, float)):
         raise ProtocolError("invalid_params", "limit must be a number")
+
+
+def _validate_conversation_submit_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"text"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    text = params.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ProtocolError("invalid_params", "text must be a non-empty string")
+
+
+def _validate_conversation_update_config_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"cloud_enabled", "model"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    cloud_enabled = params.get("cloud_enabled")
+    if cloud_enabled is not None and not isinstance(cloud_enabled, bool):
+        raise ProtocolError("invalid_params", "cloud_enabled must be a boolean")
+    model = params.get("model")
+    if model is not None and not isinstance(model, str):
+        raise ProtocolError("invalid_params", "model must be a string")
 
 
 def _validate_subscription_params(params: dict[str, Any]) -> None:
