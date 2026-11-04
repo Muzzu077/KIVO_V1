@@ -2,6 +2,15 @@
 from __future__ import annotations
 
 from kivo.conversation.providers.base import LLMProvider
-from kivo.conversation.providers.openrouter import OpenRouterProvider
+from kivo.conversation.providers.openrouter import (
+    OmniRouteProvider,
+    OpenAICompatibleProvider,
+    OpenRouterProvider,
+)
 
-__all__ = ["LLMProvider", "OpenRouterProvider"]
+__all__ = [
+    "LLMProvider",
+    "OpenAICompatibleProvider",
+    "OpenRouterProvider",
+    "OmniRouteProvider",
+]

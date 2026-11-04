@@ -131,6 +131,7 @@ Scope {
     property string conversationModel: ""
     property string streamingResponseAccumulated: ""
     property var conversationHistory: []
+    property var conversationAvailableModels: []
 
     // ── Signals ────────────────────────────────────────────────────────────
     signal statusUpdated()
@@ -692,6 +693,23 @@ Scope {
                 conversationStatus = result.status
                 conversationCloudEnabled = result.status.cloud_enabled === true
             }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function conversationListModels(callback) {
+        return request("conversation_list_models", null, function(error, result) {
+            if (!error && _isObject(result) && Array.isArray(result.models)) {
+                conversationAvailableModels = result.models
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function conversationTestConnection(callback) {
+        return request("conversation_test_connection", null, function(error, result) {
             if (typeof callback === "function")
                 callback(error, result)
         })

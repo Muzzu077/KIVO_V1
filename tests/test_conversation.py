@@ -8,12 +8,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from kivo.conversation.context_manager import ContextManager
 from kivo.conversation.conversation_config import (
+    DEFAULT_OMNIROUTE_URL,
+    clean_base_url,
+    get_omniroute_api_key,
     load_conversation_config,
     save_conversation_config,
+    save_omniroute_api_key,
 )
 from kivo.conversation.conversation_manager import ConversationManager
 from kivo.conversation.exceptions import (
     ProviderAuthenticationError,
+    ProviderError,
     ProviderRateLimitError,
 )
 from kivo.conversation.models import (
@@ -24,7 +29,11 @@ from kivo.conversation.models import (
 )
 from kivo.conversation.prompt_manager import get_system_prompt
 from kivo.conversation.providers.base import LLMProvider
-from kivo.conversation.providers.openrouter import OpenRouterProvider
+from kivo.conversation.providers.openrouter import (
+    OmniRouteProvider,
+    OpenAICompatibleProvider,
+    OpenRouterProvider,
+)
 from kivo.stt.models import TranscriptionResult
 
 
@@ -95,15 +104,92 @@ class ConversationConfigTest(unittest.TestCase):
         self.assertIn("cloud_enabled", cfg)
         self.assertIn("model", cfg)
         self.assertIn("provider", cfg)
+        self.assertIn("omniroute_base_url", cfg)
+
+    def test_clean_base_url_normalization(self):
+        self.assertEqual(clean_base_url("127.0.0.1:20128"), "http://127.0.0.1:20128/v1")
+        self.assertEqual(clean_base_url("http://localhost:20128/"), "http://localhost:20128/v1")
+        self.assertEqual(clean_base_url("http://127.0.0.1:20128/v1/"), "http://127.0.0.1:20128/v1")
 
     def test_save_and_restore_config(self):
-        updated = save_conversation_config(cloud_enabled=True, model="test/model:free")
+        updated = save_conversation_config(
+            cloud_enabled=True,
+            provider="omniroute",
+            model="agy/gemini-3.8-flash-high",
+            omniroute_base_url="http://127.0.0.1:20128/v1",
+        )
         self.assertTrue(updated["cloud_enabled"])
-        self.assertEqual(updated["model"], "test/model:free")
+        self.assertEqual(updated["provider"], "omniroute")
+        self.assertEqual(updated["model"], "agy/gemini-3.8-flash-high")
+        self.assertEqual(updated["omniroute_base_url"], "http://127.0.0.1:20128/v1")
 
-        # Restore default to False
-        reverted = save_conversation_config(cloud_enabled=False)
+        # Restore default to False and model to auto
+        reverted = save_conversation_config(cloud_enabled=False, model="auto", provider="omniroute")
         self.assertFalse(reverted["cloud_enabled"])
+
+
+class OmniRouteProviderTest(unittest.TestCase):
+    def test_omniroute_defaults(self):
+        provider = OmniRouteProvider(
+            api_key_resolver=lambda: "sk-test",
+            cloud_enabled_getter=lambda: True,
+        )
+        self.assertEqual(provider._provider_name, "omniroute")
+        self.assertEqual(provider._base_url, DEFAULT_OMNIROUTE_URL)
+        self.assertEqual(provider._model, "agy/gemini-3.8-flash-high")
+
+    @patch("httpx.AsyncClient.get")
+    def test_list_models_success(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "data": [
+                {"id": "agy/gemini-3.8-flash-high"},
+                {"id": "openrouter/google/gemini-3.7-flash"},
+                {"id": "cl/anthropic/claude-opus-4.8"},
+            ]
+        }
+        mock_get.return_value = mock_resp
+
+        provider = OmniRouteProvider(
+            api_key_resolver=lambda: "sk-valid-key",
+            cloud_enabled_getter=lambda: True,
+        )
+        models = asyncio.run(provider.list_models())
+        self.assertEqual(len(models), 3)
+        self.assertIn("agy/gemini-3.8-flash-high", models)
+
+    @patch("httpx.AsyncClient.get")
+    def test_test_connection_reports_success_without_leaking_key(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"data": [{"id": "m1"}, {"id": "m2"}]}
+        mock_get.return_value = mock_resp
+
+        secret_key = "super-secret-key-do-not-leak"
+        provider = OmniRouteProvider(
+            api_key_resolver=lambda: secret_key,
+            cloud_enabled_getter=lambda: True,
+        )
+        ok, msg = asyncio.run(provider.test_connection())
+        self.assertTrue(ok)
+        self.assertIn("Omniroute", msg)
+        self.assertNotIn(secret_key, msg)
+
+    @patch("httpx.AsyncClient.get")
+    def test_test_connection_reports_auth_failure_cleanly(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_get.return_value = mock_resp
+
+        provider = OmniRouteProvider(
+            api_key_resolver=lambda: "bad-key",
+            cloud_enabled_getter=lambda: True,
+        )
+        ok, msg = asyncio.run(provider.test_connection())
+        self.assertFalse(ok)
+        self.assertIn("401", msg)
+        self.assertNotIn("bad-key", msg)
 
 
 class OpenRouterProviderTest(unittest.TestCase):
@@ -238,6 +324,24 @@ class ConversationManagerTest(unittest.TestCase):
         # Context has user and assistant messages
         self.assertEqual(self.cm.message_count(), 2)
 
+        mgr.close()
+
+    def test_switch_provider_and_base_url(self):
+        mgr = ConversationManager(
+            context_manager=self.cm,
+            provider=self.mock_provider,
+        )
+        mgr.set_provider("omniroute", base_url="http://localhost:20128", model="agy/gemini-3.8-flash-high")
+        status = mgr.get_status()
+        self.assertEqual(status.provider.provider_name, "omniroute")
+        self.assertEqual(status.provider.model, "agy/gemini-3.8-flash-high")
+
+        # Switch back to openrouter
+        mgr.set_provider("openrouter", model="meta-llama/llama-3.3-70b-instruct:free")
+        status2 = mgr.get_status()
+        self.assertEqual(status2.provider.provider_name, "openrouter")
+        self.assertEqual(status2.provider.model, "meta-llama/llama-3.3-70b-instruct:free")
+        save_conversation_config(cloud_enabled=False, model="auto", provider="omniroute")
         mgr.close()
 
 

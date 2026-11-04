@@ -25,3 +25,11 @@ class LLMProvider(ABC):
     @abstractmethod
     async def close(self) -> None:
         """Release HTTP connections and resources."""
+
+    async def list_models(self) -> list[str]:
+        """Return available model IDs supported by this provider."""
+        return []
+
+    async def test_connection(self) -> tuple[bool, str]:
+        """Test reachability and authentication without exposing secrets."""
+        return True, "Provider ready"

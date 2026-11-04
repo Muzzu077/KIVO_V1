@@ -73,6 +73,10 @@ REQUEST_OPERATIONS = frozenset({
     "conversation.clear",
     "conversation_update_config",
     "conversation.update_config",
+    "conversation_list_models",
+    "conversation.list_models",
+    "conversation_test_connection",
+    "conversation.test_connection",
 })
 
 EVENT_NAMES = (
@@ -349,7 +353,7 @@ def _validate_conversation_submit_params(params: dict[str, Any]) -> None:
 
 
 def _validate_conversation_update_config_params(params: dict[str, Any]) -> None:
-    unknown = set(params) - {"cloud_enabled", "model"}
+    unknown = set(params) - {"cloud_enabled", "provider", "model", "omniroute_base_url", "api_key"}
     if unknown:
         raise ProtocolError(
             "invalid_params",
@@ -358,9 +362,18 @@ def _validate_conversation_update_config_params(params: dict[str, Any]) -> None:
     cloud_enabled = params.get("cloud_enabled")
     if cloud_enabled is not None and not isinstance(cloud_enabled, bool):
         raise ProtocolError("invalid_params", "cloud_enabled must be a boolean")
+    provider = params.get("provider")
+    if provider is not None and not isinstance(provider, str):
+        raise ProtocolError("invalid_params", "provider must be a string")
     model = params.get("model")
     if model is not None and not isinstance(model, str):
         raise ProtocolError("invalid_params", "model must be a string")
+    base_url = params.get("omniroute_base_url")
+    if base_url is not None and not isinstance(base_url, str):
+        raise ProtocolError("invalid_params", "omniroute_base_url must be a string")
+    api_key = params.get("api_key")
+    if api_key is not None and not isinstance(api_key, str):
+        raise ProtocolError("invalid_params", "api_key must be a string")
 
 
 def _validate_subscription_params(params: dict[str, Any]) -> None:

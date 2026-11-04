@@ -8,6 +8,9 @@ from typing import Callable, Optional
 
 from kivo.conversation.context_manager import ContextManager
 from kivo.conversation.conversation_config import (
+    DEFAULT_OMNIROUTE_URL,
+    clean_base_url,
+    get_omniroute_api_key,
     get_openrouter_api_key,
     load_conversation_config,
     save_conversation_config,
@@ -18,7 +21,10 @@ from kivo.conversation.models import (
     ProviderStatus,
 )
 from kivo.conversation.providers.base import LLMProvider
-from kivo.conversation.providers.openrouter import OpenRouterProvider
+from kivo.conversation.providers.openrouter import (
+    OmniRouteProvider,
+    OpenRouterProvider,
+)
 from kivo.stt.models import TranscriptionResult
 
 
@@ -45,11 +51,7 @@ class ConversationManager:
         if provider is not None:
             self._provider = provider
         else:
-            self._provider = OpenRouterProvider(
-                api_key_resolver=get_openrouter_api_key,
-                model=self._cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free"),
-                cloud_enabled_getter=lambda: self._cfg.get("cloud_enabled", False),
-            )
+            self._provider = self._create_provider_from_config(self._cfg)
 
         self._on_state_change = on_state_change
         self._on_user_message = on_user_message
@@ -70,6 +72,25 @@ class ConversationManager:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._init_event_loop()
+
+    def _create_provider_from_config(self, cfg: dict) -> LLMProvider:
+        p_name = cfg.get("provider", "omniroute").strip().lower()
+        cloud_getter = lambda: self._cfg.get("cloud_enabled", False)
+
+        if p_name == "openrouter":
+            return OpenRouterProvider(
+                api_key_resolver=get_openrouter_api_key,
+                model=cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free"),
+                cloud_enabled_getter=cloud_getter,
+            )
+        # Default: omniroute
+        base_url = clean_base_url(cfg.get("omniroute_base_url", DEFAULT_OMNIROUTE_URL))
+        return OmniRouteProvider(
+            api_key_resolver=get_omniroute_api_key,
+            model=cfg.get("model", "agy/gemini-3.8-flash-high"),
+            cloud_enabled_getter=cloud_getter,
+            base_url=base_url,
+        )
 
     def _init_event_loop(self) -> None:
         """Dedicated background asyncio event loop for LLM requests."""
@@ -96,13 +117,16 @@ class ConversationManager:
         cloud_enabled = bool(self._cfg.get("cloud_enabled", False))
         msg_count = self._context_manager.message_count()
         conv_id = self._context_manager.conversation_id
+        provider_name = str(self._cfg.get("provider", "omniroute")).strip().lower()
 
-        # Query provider status asynchronously or construct it
+        has_key = bool(get_omniroute_api_key()) if provider_name == "omniroute" else bool(get_openrouter_api_key())
+        available = cloud_enabled and has_key
+
         prov_status = ProviderStatus(
-            provider_name="openrouter",
+            provider_name=provider_name,
             model=str(self._cfg.get("model", "")),
             cloud_enabled=cloud_enabled,
-            available=cloud_enabled and bool(get_openrouter_api_key()),
+            available=available,
         )
 
         return ConversationStatus(
@@ -129,7 +153,7 @@ class ConversationManager:
         self._notify_state()
 
     def set_model(self, model: str) -> None:
-        """Update selected OpenRouter model."""
+        """Update selected model ID."""
         clean_model = (model or "").strip()
         if not clean_model:
             return
@@ -139,6 +163,65 @@ class ConversationManager:
             if hasattr(self._provider, "_model"):
                 self._provider._model = clean_model
         self._notify_state()
+
+    def set_provider(
+        self,
+        provider_name: str,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> None:
+        """Switch active provider ('omniroute' or 'openrouter') and rebuild provider instance."""
+        p_name = (provider_name or "").strip().lower()
+        if p_name not in ("omniroute", "openrouter"):
+            raise ValueError(f"Unsupported provider: {provider_name}")
+
+        self.cancel_active()
+        with self._lock:
+            self._cfg["provider"] = p_name
+            if base_url:
+                self._cfg["omniroute_base_url"] = clean_base_url(base_url)
+            if model:
+                self._cfg["model"] = model.strip()
+            save_conversation_config(
+                provider=p_name,
+                omniroute_base_url=self._cfg.get("omniroute_base_url"),
+                model=self._cfg.get("model"),
+            )
+            old_prov = self._provider
+            self._provider = self._create_provider_from_config(self._cfg)
+
+        if hasattr(old_prov, "close"):
+            try:
+                # Schedule closing old HTTP client
+                if self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(old_prov.close(), self._loop)
+            except Exception:
+                pass
+        self._notify_state()
+
+    def set_omniroute_base_url(self, base_url: str) -> None:
+        """Update OmniRoute gateway endpoint URL."""
+        cleaned = clean_base_url(base_url)
+        with self._lock:
+            self._cfg["omniroute_base_url"] = cleaned
+            save_conversation_config(omniroute_base_url=cleaned)
+            if hasattr(self._provider, "_base_url"):
+                self._provider._base_url = cleaned
+        self._notify_state()
+
+    def list_models(self) -> list[str]:
+        """Fetch available models from the active provider synchronously."""
+        if not self._loop or not self._loop.is_running():
+            return []
+        future = asyncio.run_coroutine_threadsafe(self._provider.list_models(), self._loop)
+        return future.result(timeout=12.0)
+
+    def test_connection(self) -> tuple[bool, str]:
+        """Test connection to the active provider synchronously."""
+        if not self._loop or not self._loop.is_running():
+            return False, "Background conversation event loop is not running"
+        future = asyncio.run_coroutine_threadsafe(self._provider.test_connection(), self._loop)
+        return future.result(timeout=12.0)
 
     def clear(self) -> None:
         """Reset conversation context."""

@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from kivo.app import KivoApp
 from kivo.conversation.providers.base import LLMProvider
@@ -157,6 +157,56 @@ class ConversationIPCTests(unittest.TestCase):
 
         # Revert cloud_enabled to False
         self._request("conversation_update_config", {"cloud_enabled": False})
+
+    def test_conversation_list_models_and_test_connection_via_ipc(self):
+        conv_mgr = self.app._components.get("conversation_manager")
+        self.assertIsNotNone(conv_mgr)
+
+        mock_prov = MagicMock(spec=LLMProvider)
+
+        async def fake_list():
+            return ["agy/gemini-3.8-flash-high", "cl/anthropic/claude-opus-4.8"]
+
+        async def fake_test():
+            return True, "Connected to OmniRoute (2 models available)"
+
+        mock_prov.list_models = fake_list
+        mock_prov.test_connection = fake_test
+        mock_prov.get_status = AsyncMock(return_value=MagicMock(to_dict=lambda: {}))
+        conv_mgr._provider = mock_prov
+
+        # Test conversation_list_models
+        resp = self._request("conversation_list_models")
+        self.assertTrue(resp.get("ok"))
+        models = resp.get("result", {}).get("models", [])
+        self.assertEqual(len(models), 2)
+        self.assertIn("agy/gemini-3.8-flash-high", models)
+
+        # Test conversation_test_connection
+        test_resp = self._request("conversation_test_connection")
+        self.assertTrue(test_resp.get("ok"))
+        self.assertTrue(test_resp.get("result", {}).get("ok"))
+        self.assertIn("OmniRoute", test_resp.get("result", {}).get("message"))
+
+    @patch("kivo.conversation.conversation_config.save_omniroute_api_key")
+    def test_conversation_update_omniroute_config(self, mock_save):
+        resp = self._request("conversation_update_config", {
+            "provider": "omniroute",
+            "omniroute_base_url": "http://127.0.0.1:20128/v1",
+            "model": "agy/gemini-3.8-flash-high",
+            "api_key": "sk-test-secret-key-12345",
+        })
+        self.assertTrue(resp.get("ok"))
+        mock_save.assert_called_once_with("sk-test-secret-key-12345")
+        res = resp.get("result", {}).get("status", {})
+        self.assertEqual(res.get("provider", {}).get("provider_name"), "omniroute")
+        self.assertEqual(res.get("provider", {}).get("model"), "agy/gemini-3.8-flash-high")
+        # Ensure secret key is NEVER reflected in status response
+        serialized = json.dumps(resp)
+        self.assertNotIn("sk-test-secret-key-12345", serialized)
+
+        # Restore default model
+        self._request("conversation_update_config", {"model": "auto", "cloud_enabled": False})
 
 
 if __name__ == "__main__":

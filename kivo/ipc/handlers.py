@@ -272,11 +272,50 @@ class IPCHandlers:
             return {"ok": False, "error": "Conversation subsystem is not initialized"}
         if not params or not isinstance(params, dict):
             return {"ok": False, "error": "Missing parameters"}
+
+        # Handle secret API key storage (0600 mode)
+        if "api_key" in params and isinstance(params["api_key"], str):
+            from kivo.conversation.conversation_config import save_omniroute_api_key
+            save_omniroute_api_key(params["api_key"])
+
+        # Handle provider switch / URL / model
+        new_provider = params.get("provider")
+        new_url = params.get("omniroute_base_url")
+        new_model = params.get("model")
+
+        if new_provider:
+            try:
+                self._conv.set_provider(new_provider, base_url=new_url, model=new_model)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+        else:
+            if new_url and hasattr(self._conv, "set_omniroute_base_url"):
+                self._conv.set_omniroute_base_url(new_url)
+            if new_model and hasattr(self._conv, "set_model"):
+                self._conv.set_model(new_model)
+
         if "cloud_enabled" in params:
             self._conv.set_cloud_enabled(bool(params["cloud_enabled"]))
-        if "model" in params and isinstance(params["model"], str) and params["model"].strip():
-            self._conv.set_model(params["model"].strip())
+
         return {"ok": True, "status": self.conversation_get_status()}
+
+    def conversation_list_models(self) -> dict:
+        if self._conv is None:
+            return {"ok": False, "models": [], "error": "Conversation subsystem not initialized"}
+        try:
+            models = self._conv.list_models()
+            return {"ok": True, "models": models}
+        except Exception as exc:
+            return {"ok": False, "models": [], "error": str(exc)}
+
+    def conversation_test_connection(self) -> dict:
+        if self._conv is None:
+            return {"ok": False, "message": "Conversation subsystem not initialized"}
+        try:
+            ok, msg = self._conv.test_connection()
+            return {"ok": ok, "message": msg}
+        except Exception as exc:
+            return {"ok": False, "message": str(exc)}
 
     def _drive_snapshot(self) -> dict:
         state = self._drive.snapshot()

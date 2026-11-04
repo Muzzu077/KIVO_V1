@@ -6,8 +6,8 @@ import "../styles"
     KIVO Dashboard — Conversation page.
 
     Provides the multi-turn conversational dialogue thread between the user
-    and KIVO, streaming response display, cloud consent control, model configuration,
-    and text submission.
+    and KIVO, streaming response display, cloud consent control, provider selection
+    (OmniRoute local gateway vs OpenRouter), model discovery, and text submission.
 */
 Item {
     id: page
@@ -18,7 +18,14 @@ Item {
     property var conversationHistory: ipc && ipc.conversationHistory ? ipc.conversationHistory : []
     property var conversationStatus: ipc ? ipc.conversationStatus : null
     property bool cloudEnabled: ipc ? ipc.conversationCloudEnabled : false
-    property string currentModel: conversationStatus && conversationStatus.provider ? conversationStatus.provider.model : "meta-llama/llama-3.3-70b-instruct:free"
+    property string activeProvider: conversationStatus && conversationStatus.provider ? conversationStatus.provider.provider_name : "omniroute"
+    property string currentModel: conversationStatus && conversationStatus.provider ? conversationStatus.provider.model : "agy/gemini-3.8-flash-high"
+    property var discoveredModels: []
+    property string testMessage: ""
+    property bool testSuccess: false
+    property bool testingConnection: false
+    property bool discoveringModels: false
+    property bool showModelPicker: false
 
     function refreshConversation() {
         if (!online)
@@ -74,7 +81,7 @@ Item {
 
             Item { Layout.fillWidth: true }
 
-            // Cancel button (visible when generating)
+            // Stop generation button
             Rectangle {
                 Layout.preferredWidth: cancelBtnText.implicitWidth + 18
                 Layout.preferredHeight: 26
@@ -101,7 +108,7 @@ Item {
                 }
             }
 
-            // Clear history button
+            // Clear chat button
             Rectangle {
                 Layout.preferredWidth: clearBtnText.implicitWidth + 18
                 Layout.preferredHeight: 26
@@ -130,10 +137,10 @@ Item {
             }
         }
 
-        // ── Cloud AI Privacy & Consent Card ─────────────────────────────────
+        // ── Provider & Consent Configuration Card ───────────────────────────
         Rectangle {
             width: parent.width
-            height: consentCol.implicitHeight + 16
+            height: configCol.implicitHeight + 16
             radius: 12
             color: page.cloudEnabled
                 ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.08)
@@ -142,15 +149,17 @@ Item {
             border.color: page.cloudEnabled ? Theme.accentSoft : Theme.divider
 
             Column {
-                id: consentCol
+                id: configCol
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
                 anchors.margins: 10
-                spacing: 6
+                spacing: 8
 
+                // Row 1: Consent status, Provider Switcher & Toggle
                 RowLayout {
                     width: parent.width
+                    spacing: 8
 
                     Row {
                         spacing: 6
@@ -162,7 +171,7 @@ Item {
                             color: page.cloudEnabled ? Theme.mint : Theme.warning
                         }
                         Text {
-                            text: page.cloudEnabled ? "Cloud AI Enabled (OpenRouter)" : "Cloud AI Disabled (Local Only)"
+                            text: page.cloudEnabled ? "AI Enabled" : "AI Disabled (Local Only)"
                             font.pixelSize: Theme.fontCaption
                             font.bold: true
                             color: page.cloudEnabled ? Theme.accent : Theme.warning
@@ -171,18 +180,79 @@ Item {
 
                     Item { Layout.fillWidth: true }
 
-                    // Model Badge
-                    Text {
-                        text: "Model: " + page.currentModel
-                        font.pixelSize: Theme.fontCaption - 1
-                        color: Theme.textMuted
-                        font.family: Theme.monoFamily
-                        elide: Text.ElideRight
+                    // Provider Tabs
+                    Rectangle {
+                        Layout.preferredWidth: 200
+                        Layout.preferredHeight: 24
+                        radius: 6
+                        color: Theme.surfaceRaised
+                        border.width: 1
+                        border.color: Theme.border
+
+                        Row {
+                            anchors.fill: parent
+
+                            // OmniRoute Tab
+                            Rectangle {
+                                width: 100
+                                height: parent.height
+                                radius: 5
+                                color: page.activeProvider === "omniroute" ? Theme.accentDim : "transparent"
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "OmniRoute"
+                                    font.pixelSize: Theme.fontCaption - 1
+                                    font.bold: page.activeProvider === "omniroute"
+                                    color: page.activeProvider === "omniroute" ? Theme.textPrimary : Theme.textMuted
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: {
+                                        if (page.ipc && page.ipc.conversationUpdateConfig) {
+                                            page.ipc.conversationUpdateConfig({
+                                                provider: "omniroute",
+                                                model: "agy/gemini-3.8-flash-high"
+                                            }, function(err, res) {
+                                                page.refreshConversation()
+                                            })
+                                        }
+                                    }
+                                }
+                            }
+
+                            // OpenRouter Tab
+                            Rectangle {
+                                width: 100
+                                height: parent.height
+                                radius: 5
+                                color: page.activeProvider === "openrouter" ? Theme.accentDim : "transparent"
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "OpenRouter"
+                                    font.pixelSize: Theme.fontCaption - 1
+                                    font.bold: page.activeProvider === "openrouter"
+                                    color: page.activeProvider === "openrouter" ? Theme.textPrimary : Theme.textMuted
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: {
+                                        if (page.ipc && page.ipc.conversationUpdateConfig) {
+                                            page.ipc.conversationUpdateConfig({
+                                                provider: "openrouter",
+                                                model: "meta-llama/llama-3.3-70b-instruct:free"
+                                            }, function(err, res) {
+                                                page.refreshConversation()
+                                            })
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    // Toggle Button
+                    // Enable / Disable Consent Button
                     Rectangle {
-                        Layout.preferredWidth: toggleText.implicitWidth + 16
+                        Layout.preferredWidth: toggleText.implicitWidth + 14
                         Layout.preferredHeight: 24
                         radius: 6
                         color: page.cloudEnabled ? Theme.surfaceRaised : Theme.accent
@@ -192,7 +262,7 @@ Item {
                         Text {
                             id: toggleText
                             anchors.centerIn: parent
-                            text: page.cloudEnabled ? "Disable Cloud AI" : "Enable Cloud AI"
+                            text: page.cloudEnabled ? "Disable AI" : "Enable AI"
                             font.pixelSize: Theme.fontCaption - 1
                             font.bold: !page.cloudEnabled
                             color: page.cloudEnabled ? Theme.textSecondary : "#000000"
@@ -213,14 +283,203 @@ Item {
                     }
                 }
 
-                Text {
+                // Row 2: Model & Endpoint Controls
+                RowLayout {
                     width: parent.width
-                    text: page.cloudEnabled
-                        ? "Recognized speech and conversation context are sent to OpenRouter. Audio remains local and is not uploaded."
-                        : "Cloud processing is off. Spoken speech is transcribed locally, but no data leaves your machine. Enable above to receive AI answers."
-                    font.pixelSize: Theme.fontCaption - 1
-                    color: Theme.textSecondary
-                    wrapMode: Text.WordWrap
+                    spacing: 8
+
+                    Text {
+                        text: "Model:"
+                        font.pixelSize: Theme.fontCaption - 1
+                        color: Theme.textMuted
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 24
+                        radius: 6
+                        color: Theme.surfaceRaised
+                        border.width: 1
+                        border.color: Theme.border
+
+                        TextInput {
+                            id: modelInput
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            verticalAlignment: TextInput.AlignVCenter
+                            font.pixelSize: Theme.fontCaption - 1
+                            font.family: Theme.monoFamily
+                            color: Theme.textPrimary
+                            text: page.currentModel
+                            onAccepted: {
+                                if (page.ipc && page.ipc.conversationUpdateConfig) {
+                                    page.ipc.conversationUpdateConfig({ model: modelInput.text.trim() }, null)
+                                }
+                            }
+                        }
+                    }
+
+                    // Discover Models Button
+                    Rectangle {
+                        Layout.preferredWidth: discBtnText.implicitWidth + 14
+                        Layout.preferredHeight: 24
+                        radius: 6
+                        color: discMouse.containsMouse ? Theme.surfaceHover : Theme.surfaceRaised
+                        border.width: 1
+                        border.color: Theme.border
+
+                        Text {
+                            id: discBtnText
+                            anchors.centerIn: parent
+                            text: page.discoveringModels ? "Querying…" : "Discover Models"
+                            font.pixelSize: Theme.fontCaption - 1
+                            color: Theme.accent
+                        }
+
+                        MouseArea {
+                            id: discMouse
+                            anchors.fill: parent
+                            enabled: !page.discoveringModels && page.online
+                            onClicked: {
+                                page.discoveringModels = true
+                                page.testMessage = ""
+                                if (page.ipc && page.ipc.conversationListModels) {
+                                    page.ipc.conversationListModels(function(err, res) {
+                                        page.discoveringModels = false
+                                        if (!err && res && Array.isArray(res.models)) {
+                                            page.discoveredModels = res.models
+                                            page.showModelPicker = true
+                                            page.testMessage = "Found " + res.models.length + " models"
+                                            page.testSuccess = true
+                                        } else {
+                                            page.testMessage = (err && err.error && err.error.message) || (res && res.error) || "Discovery failed"
+                                            page.testSuccess = false
+                                        }
+                                    })
+                                }
+                            }
+                        }
+                    }
+
+                    // Test Connection Button
+                    Rectangle {
+                        Layout.preferredWidth: testBtnText.implicitWidth + 14
+                        Layout.preferredHeight: 24
+                        radius: 6
+                        color: testMouse.containsMouse ? Theme.surfaceHover : Theme.surfaceRaised
+                        border.width: 1
+                        border.color: Theme.border
+
+                        Text {
+                            id: testBtnText
+                            anchors.centerIn: parent
+                            text: page.testingConnection ? "Testing…" : "Test Connection"
+                            font.pixelSize: Theme.fontCaption - 1
+                            color: Theme.textPrimary
+                        }
+
+                        MouseArea {
+                            id: testMouse
+                            anchors.fill: parent
+                            enabled: !page.testingConnection && page.online
+                            onClicked: {
+                                page.testingConnection = true
+                                page.testMessage = ""
+                                if (page.ipc && page.ipc.conversationTestConnection) {
+                                    page.ipc.conversationTestConnection(function(err, res) {
+                                        page.testingConnection = false
+                                        if (!err && res && res.ok) {
+                                            page.testSuccess = true
+                                            page.testMessage = res.message || "Connection successful"
+                                        } else {
+                                            page.testSuccess = false
+                                            page.testMessage = (res && res.message) || (err && err.error && err.error.message) || "Connection failed"
+                                        }
+                                    })
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Row 3: Status / Disclaimer / Feedback text
+                RowLayout {
+                    width: parent.width
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: {
+                            if (page.testMessage.length > 0)
+                                return (page.testSuccess ? "✓ " : "✗ ") + page.testMessage
+                            if (page.activeProvider === "omniroute")
+                                return "OmniRoute Gateway (http://127.0.0.1:20128/v1) · Requests forwarded to upstream Gemini model · Audio remains local."
+                            return "OpenRouter Cloud API · Requests sent securely over HTTPS · Audio remains local and is not uploaded."
+                        }
+                        font.pixelSize: Theme.fontCaption - 1
+                        color: page.testMessage.length > 0
+                            ? (page.testSuccess ? Theme.mint : Theme.danger)
+                            : Theme.textSecondary
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        visible: page.discoveredModels.length > 0
+                        text: page.showModelPicker ? "[Hide Models]" : "[Show Models (" + page.discoveredModels.length + ")]"
+                        font.pixelSize: Theme.fontCaption - 1
+                        color: Theme.accent
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: page.showModelPicker = !page.showModelPicker
+                        }
+                    }
+                }
+
+                // Model Picker Dropdown / List (when models discovered)
+                Rectangle {
+                    width: parent.width
+                    height: 120
+                    visible: page.showModelPicker && page.discoveredModels.length > 0
+                    radius: 8
+                    color: Theme.surfaceRaised
+                    border.width: 1
+                    border.color: Theme.border
+                    clip: true
+
+                    ListView {
+                        anchors.fill: parent
+                        anchors.margins: 4
+                        model: page.discoveredModels
+                        delegate: Rectangle {
+                            width: parent.width
+                            height: 24
+                            radius: 4
+                            color: modelPickMouse.containsMouse ? Theme.surfaceHover : (modelData === page.currentModel ? Theme.accentDim : "transparent")
+
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: modelData
+                                font.pixelSize: Theme.fontCaption - 1
+                                font.family: Theme.monoFamily
+                                color: modelData === page.currentModel ? Theme.accent : Theme.textPrimary
+                            }
+
+                            MouseArea {
+                                id: modelPickMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: {
+                                    modelInput.text = modelData
+                                    if (page.ipc && page.ipc.conversationUpdateConfig) {
+                                        page.ipc.conversationUpdateConfig({ model: modelData }, null)
+                                    }
+                                    page.showModelPicker = false
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -228,7 +487,7 @@ Item {
         // ── Message Thread (ListView) ───────────────────────────────────────
         Rectangle {
             width: parent.width
-            height: 330
+            height: page.showModelPicker ? 200 : 310
             radius: 12
             color: Theme.surfaceSunken
             border.width: 1
@@ -326,8 +585,8 @@ Item {
                     anchors.centerIn: parent
                     visible: page.conversationHistory.length === 0 && !(page.ipc && page.ipc.streamingResponseAccumulated)
                     text: page.cloudEnabled
-                        ? "Hold Push-to-Talk or type below to start a conversation with KIVO."
-                        : "Cloud AI is disabled. Enable cloud processing above to chat."
+                        ? "Hold Push-to-Talk or type below to speak with KIVO."
+                        : "AI response processing is disabled. Enable above to begin chatting."
                     font.pixelSize: Theme.fontBody
                     color: Theme.textMuted
                 }
