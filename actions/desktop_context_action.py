@@ -128,7 +128,7 @@ TOOL = {
     "name": "desktop_context",
     "description": (
         "Provides real-time continuous desktop and screen awareness. "
-        "Allows JARVIS to inspect what is on the screen (summary or OCR text), list open windows, "
+        "Allows KIVO to inspect what is on the screen (summary or OCR text), list open windows, "
         "identify terminal directories, switch/focus windows, type text or press keys into active apps, "
         "or control background screen monitoring (pause/resume for privacy)."
     ),

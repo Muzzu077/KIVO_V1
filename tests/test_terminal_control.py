@@ -12,9 +12,9 @@ class TestTerminalControl(unittest.TestCase):
         self.assertIsInstance(is_idle, bool)
 
     def test_run_command_safe(self):
-        res = self.adapter.run_in_subprocess("echo 'MARK_LV_TEST'")
+        res = self.adapter.run_in_subprocess("echo 'KIVO_TEST'")
         self.assertTrue(res.success)
-        self.assertIn("MARK_LV_TEST", res.output)
+        self.assertIn("KIVO_TEST", res.output)
 
     def test_terminal_control_action_dispatch(self):
         from actions.terminal_control_action import terminal_control

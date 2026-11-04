@@ -1,5 +1,5 @@
 """
-actions/send_message.py — Universal Desktop & Web Chat Controller for JARVIS.
+actions/send_message.py — Universal Desktop & Web Chat Controller for KIVO.
 
 Supports sending messages across:
   - WhatsApp (WhatsApp Web via web.whatsapp.com or native app)

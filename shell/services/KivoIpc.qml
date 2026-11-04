@@ -102,6 +102,10 @@ Scope {
     readonly property var taskSteps: task && Array.isArray(task.steps) ? task.steps : []
     readonly property real taskCreatedAt: _number(task, "created_at", 0)
 
+    // Task history returned by get_dashboard_data / task_history_updated.
+    // Presentation only: no private memory or tool internals are surfaced.
+    property var taskHistory: []
+
     readonly property bool taskCancellable: connected && activeTask
         && (taskStatus === "pending" || taskStatus === "running")
         && !cancelling
@@ -454,6 +458,25 @@ Scope {
         return true
     }
 
+    // ── Dashboard data ─────────────────────────────────────────────────────
+    function getDashboardData(callback) {
+        var result = request("get_dashboard_data", null, function(error, payload) {
+            if (error) {
+                if (typeof callback === "function")
+                    callback(error, null)
+                return
+            }
+            if (_isObject(payload) && Array.isArray(payload.task_history)) {
+                taskHistory = payload.task_history
+            } else {
+                taskHistory = []
+            }
+            if (typeof callback === "function")
+                callback(null, payload)
+        })
+        return result
+    }
+
     // ── Incoming messages ──────────────────────────────────────────────────
     function _handleLine(line) {
         if (typeof line !== "string")
@@ -726,6 +749,9 @@ Scope {
             _invalid("task_history_updated event has no active_task flag")
             return
         }
+
+        var history = Array.isArray(data.task_history) ? data.task_history : []
+        taskHistory = history
 
         var nextTask = task
         if (data.current_task === null) {

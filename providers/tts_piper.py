@@ -88,7 +88,7 @@ def _voice_dir() -> Path:
     else:
         root = Path(os.environ.get("XDG_DATA_HOME")
                     or Path.home() / ".local" / "share")
-    fallback = root / "MarkAssistant" / "piper-voices"
+    fallback = root / "KIVO" / "piper-voices"
     try:
         fallback.mkdir(parents=True, exist_ok=True)
     except Exception:

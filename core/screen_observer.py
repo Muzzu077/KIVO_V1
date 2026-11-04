@@ -15,7 +15,7 @@ WHY THIS EXISTS
       4. Performs background OCR / text extraction on active regions to know what
          code, errors, or text the user is looking at right now.
       5. Maintains a rolling memory of recent screen changes and provides an
-         instantaneous context summary to JARVIS and Gemini Live.
+         instantaneous context summary to KIVO and Gemini Live.
       6. Includes privacy controls (pause/resume/blackout) and adaptive throttling.
 """
 from __future__ import annotations
@@ -148,7 +148,7 @@ class ScreenObserver:
             self._thread = threading.Thread(
                 target=self._monitor_loop,
                 daemon=True,
-                name="jarvis-screen-observer"
+                name="kivo-screen-observer"
             )
             self._thread.start()
             print("[ScreenObserver] 🚀 Background screen monitoring started.")

@@ -114,6 +114,13 @@ def _notch_layer(namespace: str) -> dict | None:
     return None
 
 
+def _dashboard_layer() -> dict | None:
+    for layer in _niri_layers():
+        if str(layer.get("namespace", "")).startswith("kivo-dashboard"):
+            return layer
+    return None
+
+
 class QmlStaticTest(unittest.TestCase):
     def test_expected_files_exist(self) -> None:
         expected = [
@@ -124,6 +131,12 @@ class QmlStaticTest(unittest.TestCase):
             "components/TaskProgress.qml",
             "components/StatusIndicator.qml",
             "components/StopButton.qml",
+            "components/KivoDashboard.qml",
+            "components/DashboardOverview.qml",
+            "components/DashboardActivity.qml",
+            "components/DashboardAgents.qml",
+            "components/DashboardDesktopContext.qml",
+            "components/DashboardSettings.qml",
             "services/KivoIpc.qml",
             "styles/Theme.qml",
         ]
@@ -671,13 +684,28 @@ class NotchIntegrationTest(unittest.TestCase):
         last = None
         while time.monotonic() < deadline:
             layer = _notch_layer(namespace)
-            last = layer.get("keyboard_interactivity") if layer else None
+            if layer is None:
+                last = None
+                time.sleep(0.1)
+                continue
+            last = layer.get("keyboard_interactivity")
             if last is not None and str(last).lower() == expected.lower():
                 return
             time.sleep(0.1)
         raise AssertionError(
             f"expected keyboard interactivity {expected!r}, saw {last!r}"
         )
+
+    def wait_dashboard_layer(self, timeout: float = 8.0) -> dict:
+        deadline = time.monotonic() + timeout
+        last = None
+        while time.monotonic() < deadline:
+            layer = _dashboard_layer()
+            if layer is not None:
+                return layer
+            last = layer
+            time.sleep(0.1)
+        raise AssertionError(f"dashboard layer did not appear; last={last!r}")
 
     # ── Tests ──────────────────────────────────────────────────────────────
     def test_shell_starts_with_backend_unavailable(self) -> None:
@@ -1048,6 +1076,43 @@ class NotchIntegrationTest(unittest.TestCase):
         self.assertEqual(panel_regions[-1], expanded_box)
         self.assertLess(expanded_box[2], expanded["panelWidth"])
         self.assertLess(expanded_box[3], expanded["panelHeight"])
+
+    def test_dashboard_lifecycle_and_notch_independence(self) -> None:
+        backend = self.start_backend()
+        shell = self.start_shell(backend)
+        shell.wait_state("idle")
+        self.assertFalse(shell.snapshot()["dashboardOpen"])
+
+        shell.call("openDashboard")
+        opened = shell.wait_snapshot(
+            lambda item: item["dashboardOpen"] and item["dashboardWindowWidth"] == 880,
+            timeout=15,
+        )
+        self.assertEqual(opened["dashboardWindowWidth"], 880)
+        self.assertEqual(opened["dashboardWindowHeight"], 620)
+        layer = self.wait_dashboard_layer()
+        self.assertEqual(layer.get("namespace", "").startswith("kivo-dashboard"), True)
+        self.assertEqual(layer.get("layer"), "Top")
+
+        # The notch stays independently controllable while the dashboard is open.
+        shell.call("collapse")
+        shell.wait_snapshot(lambda item: not item["expanded"], timeout=12)
+        shell.call("closeDashboard")
+        shell.wait_snapshot(lambda item: not item["dashboardOpen"], timeout=12)
+        self.assertFalse(shell.snapshot()["dashboardOpen"])
+
+    def test_dashboard_disconnected_state(self) -> None:
+        shell = self.start_shell()
+        shell.wait_state("offline")
+        shell.call("openDashboard")
+        opened = shell.wait_snapshot(
+            lambda item: item["dashboardOpen"] and item["state"] == "offline",
+            timeout=15,
+        )
+        self.assertTrue(opened["dashboardOpen"])
+        self.assertEqual(opened["state"], "offline")
+        shell.call("closeDashboard")
+        shell.wait_snapshot(lambda item: not item["dashboardOpen"], timeout=12)
 
 
 if __name__ == "__main__":

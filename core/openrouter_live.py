@@ -1,5 +1,5 @@
 """
-OpenRouter Live Session adapter for Mark-LV.
+OpenRouter Live Session adapter for KIVO.
 Provides a Gemini Live WebSocket compatible interface backed by OpenRouter
 (OpenAI-compatible REST API) with EdgeTTS streaming and speech recognition.
 """
@@ -328,8 +328,8 @@ class OpenRouterLiveSession:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Mark-LV",
-                "X-Title": "Mark-LV",
+                "HTTP-Referer": "https://github.com/KIVO",
+                "X-Title": "KIVO",
             }
             payload = {
                 "model": self.model,

@@ -25,7 +25,7 @@ class TestAgentWorkspace(unittest.TestCase):
             path=self.base / "layers.json",
             backup_path=self.base / "layers.json.bak",
         )
-        self.env = patch.dict(os.environ, {"MARK_LV_AGENTS_DIR": str(self.base)})
+        self.env = patch.dict(os.environ, {"KIVO_AGENTS_DIR": str(self.base)})
         self.env.start()
         self.store_patch = patch(
             "memory.memory_manager._default_layer_store", self.store)
@@ -90,7 +90,7 @@ class TestOrchestratorWorkspaceIntegration(unittest.TestCase):
             path=self.base / "layers.json",
             backup_path=self.base / "layers.json.bak",
         )
-        self.env = patch.dict(os.environ, {"MARK_LV_AGENTS_DIR": str(self.base)})
+        self.env = patch.dict(os.environ, {"KIVO_AGENTS_DIR": str(self.base)})
         self.env.start()
         self.store_patch = patch(
             "memory.memory_manager._default_layer_store", self.store)

@@ -18,7 +18,7 @@ WHAT IT ACCEPTS
 
 SOUND IS OFF UNTIL ASKED FOR
     A soundtrack talking over the assistant is the one way this feature could
-    make JARVIS worse rather than better, and the microphone is open while it
+    make KIVO worse rather than better, and the microphone is open while it
     plays. So it starts muted, and the user turns sound on — from the button in
     the video header, or by saying so. Closing it works both ways too.
 """
@@ -218,7 +218,7 @@ def video_player(parameters: dict = None, response=None, player=None,
     # answer — the fast clients came back with zero usable formats.
     #
     # So the seconds stay, and what changes is where the user spends them:
-    # listening to JARVIS say it is coming, instead of watching nothing happen.
+    # listening to KIVO say it is coming, instead of watching nothing happen.
     # The same shape whatsapp_call uses, and for the same reason.
     threading.Thread(target=_play_youtube, args=(player, source, _begin_open()),
                      daemon=True, name="video-open").start()

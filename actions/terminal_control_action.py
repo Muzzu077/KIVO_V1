@@ -1,5 +1,5 @@
 """
-Terminal Control Action for JARVIS (Mark-LV).
+Terminal Control Action for KIVO (KIVO).
 
 Enables full control over local terminal windows:
 - Typing commands directly into visible terminals via Wayland (wtype) / X11 (xdotool)
@@ -143,7 +143,7 @@ TOOL = {
             },
             "directory": {
                 "type": "STRING",
-                "description": "Optional working directory path (e.g. '~/Projects/Mark-LV')"
+                "description": "Optional working directory path (e.g. '~/Projects/KIVO')"
             },
             "wait_seconds": {
                 "type": "NUMBER",

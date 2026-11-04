@@ -1,5 +1,5 @@
 """
-core/drive.py — one place that knows whether JARVIS is driving the desktop.
+core/drive.py — one place that knows whether KIVO is driving the desktop.
 
 WHY THIS EXISTS
     "Stop" was three unrelated things. The voice interrupt drained the speaker

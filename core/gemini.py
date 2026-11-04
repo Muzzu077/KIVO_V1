@@ -405,8 +405,8 @@ def _call_openrouter(contents, config=None, timeout_ms: int = DEFAULT_TIMEOUT_MS
             headers={
                 "Authorization": f"Bearer {resolved_key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Mark-LV",
-                "X-Title": "Mark-LV",
+                "HTTP-Referer": "https://github.com/KIVO",
+                "X-Title": "KIVO",
             },
             json=payload,
             timeout=max(10.0, timeout_ms / 1000.0)

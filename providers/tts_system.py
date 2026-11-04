@@ -289,7 +289,7 @@ class SystemTTS:
         # them: on Windows a file still open in this process cannot be written
         # by another one, which is the standard way this fails there and not
         # anywhere else.
-        td = tempfile.mkdtemp(prefix="mark_tts_")
+        td = tempfile.mkdtemp(prefix="kivo_tts_")
         txt = os.path.join(td, "say.txt")
         wav = os.path.join(td, "say.wav")
         try:

@@ -68,7 +68,7 @@ def _log(message: str, player=None) -> None:
     print(f"[Weather] {message}")
     if player:
         try:
-            player.write_log(f"JARVIS: {message}")
+            player.write_log(f"KIVO: {message}")
         except Exception:
             pass
 

@@ -7,7 +7,7 @@ import "services"
 import "styles"
 
 /*
-    KIVO Stage 3 — Dynamic Notch frontend.
+    KIVO Stage 3 + Stage 4 — Dynamic Notch and Dashboard frontend.
 
     Run from the repository root with:
         qs -p shell
@@ -17,14 +17,32 @@ import "styles"
         KIVO_NOTCH_LAYER=overlay             use the wlr overlay layer
         KIVO_NOTCH_REDUCED_MOTION=1          disable decorative motion
         KIVO_NOTCH_AUTO_COLLAPSE=0           keep the notch open after success
-        KIVO_NOTCH_FOCUS_ON_EXPAND=0         never take keyboard focus on expand
+        KIVO_NOTCH_FOCUS_ON_EXPAND=0        never take keyboard focus on expand
 
-    The panel itself is a fixed transparent layer surface.  Its input mask is
-    the visible capsule, so every pixel outside the notch passes clicks to the
-    application underneath.
+    The notch panel is a fixed transparent layer surface with an input mask
+    shaped like the visible capsule.  The dashboard is an independent floating
+    panel; both read the same KivoIpc scope and never talk to the backend
+    directly.
 */
 ShellRoot {
     id: shell
+
+    // ── Dashboard lifecycle ─────────────────────────────────────────────────
+    // Independent of the notch: opening the dashboard never forces the notch
+    // expanded or collapses it.
+    property bool dashboardOpen: false
+
+    function openDashboard() {
+        shell.dashboardOpen = true
+    }
+
+    function closeDashboard() {
+        shell.dashboardOpen = false
+    }
+
+    function toggleDashboard() {
+        shell.dashboardOpen = !shell.dashboardOpen
+    }
 
     function envString(name, fallback) {
         var value = Quickshell.env(name)
@@ -90,10 +108,47 @@ ShellRoot {
         }
     }
 
+    PanelWindow {
+        id: dashboardWindow
+
+        // Independent desktop panel for the KIVO dashboard.  It never moves
+        // the notch and never changes the notch's own input mask.
+        anchors.top: true
+        margins.top: 0
+
+        implicitWidth: 880
+        implicitHeight: 620
+        color: "transparent"
+
+        exclusiveZone: 0
+        exclusionMode: ExclusionMode.Ignore
+
+        focusable: true
+
+        WlrLayershell.namespace: "kivo-dashboard"
+        WlrLayershell.layer: WlrLayer.Top
+        WlrLayershell.keyboardFocus: shell.dashboardOpen
+            ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+
+        visible: shell.dashboardOpen
+
+        mask: Region {
+            item: dash
+        }
+
+        KivoDashboard {
+            id: dash
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            ipc: kivoIpc
+        }
+    }
+
     /*
         A deliberately small control surface for verification and future
-        keybindings.  It exposes only notch presentation and the existing
-        cancel_active_task intent; it cannot invoke arbitrary backend methods.
+        keybindings.  It exposes only notch presentation, dashboard control and
+        the existing cancel_active_task intent; it cannot invoke arbitrary
+        backend methods.
     */
     IpcHandler {
         id: control
@@ -111,6 +166,11 @@ ShellRoot {
         function state(): string { return notch.visualState }
         function expanded(): bool { return notch.expanded }
         function connected(): bool { return notch.connected }
+
+        function openDashboard(): void { shell.dashboardOpen = true }
+        function closeDashboard(): void { shell.dashboardOpen = false }
+        function toggleDashboard(): void { shell.dashboardOpen = !shell.dashboardOpen }
+        function dashboardOpen(): bool { return shell.dashboardOpen }
 
         function snapshot(): string {
             return JSON.stringify({
@@ -144,6 +204,9 @@ ShellRoot {
                 notchY: notch.y,
                 notchWidth: notch.width,
                 notchHeight: notch.height,
+                dashboardOpen: shell.dashboardOpen,
+                dashboardWindowWidth: dashboardWindow.width,
+                dashboardWindowHeight: dashboardWindow.height,
                 lastCancellation: notch.ipc ? notch.ipc.lastCancellation : null,
                 invalidMessages: notch.ipc ? notch.ipc.invalidMessages : 0,
                 staleEvents: notch.ipc ? notch.ipc.staleEvents : 0,

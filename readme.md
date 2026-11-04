@@ -1,4 +1,4 @@
-# ⚙️ MARK LVI (56)
+# ⚙️ KIVO (56)
 ### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
 
 > 📺 **[Watch the full setup video on YouTube](https://www.youtube.com/@FatihMakes)**
@@ -9,11 +9,11 @@ A real-time voice AI that can hear, see, speak, and control your computer — on
 
 ## ✨ Overview
 
-Mark LV gave the assistant a screen. **Mark LVI lets you choose what runs it.**
+KIVO gave the assistant a screen. **KIVO lets you choose what runs it.**
 
 Until now this was a Gemini assistant, and only that. If you had no quota left, no
 connection, or a rule that says your microphone does not leave the building, you
-had no assistant. Mark LVI adds a second way to hold the conversation — speech
+had no assistant. KIVO adds a second way to hold the conversation — speech
 recognition, a language model and a voice, assembled from parts you pick in
 ⚙ → **ENGINE & PROVIDERS** — and a way to point the assistant's own background
 requests at a different model without touching the voice at all.
@@ -32,7 +32,7 @@ inherits the avatar, the lip-sync, the self-echo guard, push-to-talk, the wake
 word, memory, undo, the confirmation gate and every action and plugin — because
 it enters through the same door the Live session always did.
 
-Mark LVI also changes what the assistant is allowed to CLAIM. Every tool that
+KIVO also changes what the assistant is allowed to CLAIM. Every tool that
 drives an application now answers with what it observed rather than with what it
 attempted: `done` means it was checked, `unverified` means the request went out
 and could not be confirmed — and the assistant says exactly that instead of
@@ -56,17 +56,17 @@ It's not just an assistant — it's an extension of your digital life.
 | 🎚️ Push-to-Talk | Hold **Ctrl+Space** and the mic opens — closed the rest of the time. Truly global on Windows, window-scoped elsewhere |
 | 🔇 Self-Echo Guard | Never answers its own last sentence: the tail of its own voice is recognised and dropped without muting you |
 | 🪪 Runtime Self-Knowledge | Name, OS, abilities **and limits** are generated from the live system each session — rename it or add a plugin and it knows |
-| 🎙️ Wake Word | Local **"Hey Jarvis"** detection — sleeps until called, auto-sleeps after 2 min of silence, and never streams audio while asleep |
+| 🎙️ Wake Word | Local **"Hey KIVO"** detection — sleeps until called, auto-sleeps after 2 min of silence, and never streams audio while asleep |
 | ⚡ Instant Acknowledgment | Speaks a short, context-aware reply in **your language** the instant a longer task starts — no more silent waiting |
 | 🚀 Faster Live Engine | Runs on **Gemini 3.1 Flash Live** — roughly 2× faster time-to-first-word than the previous model |
 | 🧩 Self-Describing Skills | Every bundled skill declares its own `TOOL` dict + handler and is auto-discovered at launch — adding one is a single file |
 | 🧠 Recallable Memory | No size limit and nothing silently forgotten — the prompt carries what fits, the rest is looked up on demand from a local search |
-| 👁️ Memory Panel | See every fact JARVIS has stored about you, when it learned it, and delete any of it in one click |
+| 👁️ Memory Panel | See every fact KIVO has stored about you, when it learned it, and delete any of it in one click |
 | ↩️ Undo | Take back what the assistant did — files it moved, renamed, created or wrote, and settings it changed |
 | ⚠️ Real Confirmation | Shutdown, restart and WiFi wait for a button **you** press — the model cannot confirm its own irreversible actions |
 | 🎧 Audio Device Picker | Choose the microphone and speakers by name, filtered to the short list your OS shows — and measured, so every entry actually works |
 | 🔗 Session Continuity | A dropped connection, a voice change or a device change no longer wipes the conversation |
-| 🧩 Plugin System | Drop a single `.py` file into `plugins/` — JARVIS learns a new skill on next launch |
+| 🧩 Plugin System | Drop a single `.py` file into `plugins/` — KIVO learns a new skill on next launch |
 | 📺 Video on the HUD | Plays YouTube, a local file or any video URL **where the avatar sits** — starts muted, sound on request |
 | 🪜 Model Ladder | Nine Gemini models in one measured order — a quota, a timeout or an outage steps to the next rung instead of failing |
 | 🔌 Choose Your Engine | Gemini Live, or your own STT + LLM + TTS — picked in the UI, no file editing |
@@ -78,7 +78,7 @@ It's not just an assistant — it's an extension of your digital life.
 | 🧮 Tool Budget | A small model is given the tools that matter instead of all 45 — core-first, by count and by size |
 | 🎙️ Real-time Voice | Ultra-low latency conversation in any language via Gemini Live API |
 | 🎨 Live Theming | Recolour the entire HUD from a hue wheel or hex — the avatar retints with it |
-| 〰️ Reactive HUD | Waveform pulses to real audio — your mic while listening, JARVIS while speaking |
+| 〰️ Reactive HUD | Waveform pulses to real audio — your mic while listening, KIVO while speaking |
 | 🎙️ Voice Picker | Choose from 5 native Gemini voices and switch live from the UI — no restart |
 | ♾️ Unlimited Sessions | Sliding-window context compression — one conversation can last for hours |
 | 🖥️ System Control | Launch apps, adjust volume/brightness, WiFi, shortcuts, power — all by voice |
@@ -114,7 +114,7 @@ It's not just an assistant — it's an extension of your digital life.
 
 ---
 
-## 🆕 What's New in Mark LVI
+## 🆕 What's New in KIVO
 
 **Nothing new is installed by default.** Talking to a model — local or hosted — uses `httpx`, which already ships with `google-genai`. The system's own voices need no Python package at all. Local speech recognition (`faster-whisper`) and the neural voice (`piper-tts`) are one-click installs from inside the panel, and are deliberately absent from `requirements.txt`: a fresh clone that only ever uses Gemini should not download several hundred megabytes for a feature it will not open.
 
@@ -270,7 +270,7 @@ The evidence is real work, not a longer sentence. Opening an application watches
 
 > The shape came from `whatsapp_call.py` and `whatsapp_guard.py`, which reached it by hand after a real message was reported as sent when nothing had gone. The comment there is the whole argument: *"A tool that reports only its successes is an invitation to invent the rest."*
 
-### 🚪 "Close the app" closed JARVIS
+### 🚪 "Close the app" closed KIVO
 
 The old close was two lines with no target:
 
@@ -315,13 +315,13 @@ They are gone, and what replaced them is better than a translation: the rules no
 
 Wayland — the default session on Ubuntu 22.04 and later, on Fedora, and on current GNOME and KDE — does not let one program type, click, capture the screen or raise another program's window. That was the security hole it was designed to close. macOS refuses the same things until Accessibility and Screen Recording are granted. And on both, **the calls report success and have no effect**, which is the worst possible failure: the assistant says it clicked, and nothing moved.
 
-None of that is fixable from inside the app. What was fixable is the silence. The session is detected at startup, the user is told once in the activity log, and — the half that matters — the **model is told**, so JARVIS says "this session does not permit me to drive the screen" instead of narrating a click that never happened. Voice, memory, files, the web and opening applications are unaffected, and are not mentioned.
+None of that is fixable from inside the app. What was fixable is the silence. The session is detected at startup, the user is told once in the activity log, and — the half that matters — the **model is told**, so KIVO says "this session does not permit me to drive the screen" instead of narrating a click that never happened. Voice, memory, files, the web and opening applications are unaffected, and are not mentioned.
 
 ### 🎧 The audio panel can prove it hears you
 
 Every automated probe in `core/audio_devices.py` runs on silence, which is what lets it run at startup without anyone noticing. It also means a muted microphone, a level slider at zero and a privacy shutter all pass every test and deliver a flat line. Only a person speaking can settle that.
 
-⚙ → **🎧 AUDIO DEVICES** now has a **TEST** button beside each device: the microphone shows a live meter while you speak and reports the peak it heard, the speakers play a tone. It replaces a loose `ses_testi.py` in the project root that nobody would ever have found — the moment somebody needs this is the moment they have already opened this panel wondering why JARVIS cannot hear them.
+⚙ → **🎧 AUDIO DEVICES** now has a **TEST** button beside each device: the microphone shows a live meter while you speak and reports the peak it heard, the speakers play a tone. It replaces a loose `ses_testi.py` in the project root that nobody would ever have found — the moment somebody needs this is the moment they have already opened this panel wondering why KIVO cannot hear them.
 
 There is also an **output volume slider**, and it belongs to the device chosen two lines above it rather than to the system default. Somebody puts the assistant on their speakers and keeps everything else in their headphones; a slider labelled with one device that moves the other is worse than no slider.
 
@@ -360,7 +360,7 @@ door stayed:
   the page says `NO ENC` on its own badge rather than pretending otherwise.
 
 **And Windows was blocking it, per executable, invisibly.** This produced the
-strangest report of the release: the dashboard worked when JARVIS was started
+strangest report of the release: the dashboard worked when KIVO was started
 from an editor and did not work when started from its own desktop shortcut —
 same machine, same network, same code.
 
@@ -436,7 +436,7 @@ Nothing is removed to get there. And `tier` — the per-file override that decid
 
 ---
 
-## 📦 Previously, in Mark LV
+## 📦 Previously, in KIVO
 
 One new dependency for the whole release — `yt-dlp`, and only to turn a YouTube page into something Qt can play.
 
@@ -445,9 +445,9 @@ One new dependency for the whole release — `yt-dlp`, and only to turn a YouTub
 #### 📺 Video where the face is
 The HUD already had a surface that takes the centre of the screen and gives it back: the camera. Video shares that same stack, so the avatar, the live camera and a video can never be on screen at once — and a video always lands exactly where you are already looking.
 
-It accepts **a local file, a direct media URL, a YouTube link, or just a description** ("play the new Dune trailer") and searches for it. It **starts muted every time**, because a soundtrack talking over the assistant is the one way this feature could make JARVIS worse rather than better. You turn the sound on by asking, or from the button in the video header.
+It accepts **a local file, a direct media URL, a YouTube link, or just a description** ("play the new Dune trailer") and searches for it. It **starts muted every time**, because a soundtrack talking over the assistant is the one way this feature could make KIVO worse rather than better. You turn the sound on by asking, or from the button in the video header.
 
-**It answers before it opens.** Resolving what to play takes seconds nothing can remove — measured at 2.0s for a link and 3.3s for a spoken phrase, plus buffering. Restricting yt-dlp to a lighter client was tried and made it worse: the fast clients came back with zero usable formats. So the seconds stay, and what changed is where you spend them — listening to JARVIS say it is coming, instead of watching nothing happen. Say "stop" during those seconds and the video is cancelled before it ever reaches the screen.
+**It answers before it opens.** Resolving what to play takes seconds nothing can remove — measured at 2.0s for a link and 3.3s for a spoken phrase, plus buffering. Restricting yt-dlp to a lighter client was tried and made it worse: the fast clients came back with zero usable formats. So the seconds stay, and what changed is where you spend them — listening to KIVO say it is coming, instead of watching nothing happen. Say "stop" during those seconds and the video is cancelled before it ever reaches the screen.
 
 #### 🔀 Two streams, one picture
 The first version asked YouTube for a format carrying both picture and sound and got *"Requested format is not available"*. That was not a bad selector; it was a wrong assumption. Checked against three videos — including the oldest upload on the site — **every one offered zero combined formats.** Picture and sound are separate streams now.
@@ -455,7 +455,7 @@ The first version asked YouTube for a format carrying both picture and sound and
 So there are two players running together, with a timer that corrects any drift over 300 ms. And the audio track is chosen on **language first, bitrate second** — because YouTube auto-dubs a great many videos and ships every dub at the *same* bitrate as the original: measured on one video, English at 129.483 and Arabic, Bangla, German, Spanish, French, Hindi and Indonesian all at 129.482. Sorting on bitrate alone came down to a thousandth of a kilobit, so the same video would play in Arabic one time and English the next for no reason you could see. It now reads YouTube's own original-track marker first.
 
 #### 🔇 It stopped hearing the film
-The microphone is open while a video plays, so the moment you turn the sound on, JARVIS starts answering the film. The mic now mutes itself when the video's sound goes on and unmutes when it goes off — and it says so in the activity log rather than going deaf silently.
+The microphone is open while a video plays, so the moment you turn the sound on, KIVO starts answering the film. The mic now mutes itself when the video's sound goes on and unmutes when it goes off — and it says so in the activity log rather than going deaf silently.
 
 #### 🎛 Two drawers instead of one
 ⚙ **SETUP** holds the things you set once — remote control, desktop shortcut, auto-start and customisation. 🎛 **CONTROLS** holds the switches you flick daily — fullscreen, morning brief, wake word, sleep, push-to-talk, HUD style. Only one is open at a time, and each sits under its own header button.
@@ -496,7 +496,7 @@ That middle row is where the time was going. Only quota and 404 used to be coole
 #### 🧩 Everything bundled drives the computer
 The bundled skill list had grown to seventeen, and some of it was nobody's business but its author's. **Not everyone updates games; everyone opens applications.**
 
-Mark LV trims it to **twelve**, and every one of them does the same kind of thing: drive this machine. Applications, the browser, files, the desktop, the screen, the clock, the weather, the display. The rule is written into the project tree, so the next skill lands in the right folder without anyone having to ask.
+KIVO trims it to **twelve**, and every one of them does the same kind of thing: drive this machine. Applications, the browser, files, the desktop, the screen, the clock, the weather, the display. The rule is written into the project tree, so the next skill lands in the right folder without anyone having to ask.
 
 This is not only tidiness. Every bundled skill is declared to the model on **every** connection, whether you ever use it or not. The declarations sent at startup dropped from **16,827 characters to 12,907** — roughly a thousand tokens off every session, and five fewer wrong tools for the model to reach for.
 
@@ -509,18 +509,18 @@ This is not only tidiness. Every bundled skill is declared to the model on **eve
 * Videos played in a **random language**, because YouTube's auto-dubs carry the same bitrate as the original track.
 * The settings drawer **stuttered on first open** — a 2.1-second `openwakeword` import on the UI thread, not the button count it looked like.
 * The settings drawer opened **underneath the video**, because `QVideoWidget` creates a native window.
-* JARVIS **answered the video's soundtrack.** The microphone now follows the video's sound.
+* KIVO **answered the video's soundtrack.** The microphone now follows the video's sound.
 * Qt's multimedia backend printed an ffmpeg banner to the console on every play, containing the **signed streaming URL with the viewer's IP address in it**. Silenced at startup.
 * **Every launch paid 201 ms for a plugin nobody had asked to use.** Discovery executes every file in `plugins/`, and `youtube_video` imported `requests` and `youtube_transcript_api` at module scope. Deferring one of them would have saved nothing — the transcript library imports `requests` itself. Both are now checked with `find_spec`, which answers "is it installed?" without executing anything, and loaded on first use: **plugin discovery 211 ms → 39 ms**.
-* A plugin that needed a file from a **newer Mark** was rejected with *"pip install core"*. The loader could not tell this project's own packages from a third-party one, so it told people to install a same-named stranger from an index — wrong, and a supply-chain hazard dressed up as a fix. First-party names now say the app is behind the plugin and that there is nothing to install.
+* A plugin that needed a file from a **newer KIVO** was rejected with *"pip install core"*. The loader could not tell this project's own packages from a third-party one, so it told people to install a same-named stranger from an index — wrong, and a supply-chain hazard dressed up as a fix. First-party names now say the app is behind the plugin and that there is nothing to install.
 
-> Built on the Mark LI–LV foundation: the **🧑‍🎤 Holographic Avatar**, **👄 Lip-Sync**, **🎚️ Push-to-Talk**, **🔇 Self-Echo Guard**, **🧩 Plugin System**, **♾️ Unlimited Sessions**, **🎨 Live Theming** and **🎙️ Wake Word** are all still here.
+> Built on the KIVO foundation: the **🧑‍🎤 Holographic Avatar**, **👄 Lip-Sync**, **🎚️ Push-to-Talk**, **🔇 Self-Echo Guard**, **🧩 Plugin System**, **♾️ Unlimited Sessions**, **🎨 Live Theming** and **🎙️ Wake Word** are all still here.
 
 ---
 
-## 🔄 The Foundation Update — in every Mark from LII
+## 🔄 The Foundation Update — in every KIVO from LII
 
-These four landed across **Mark LII, LIII, LIV and LV at the same time**, after each of those releases had already shipped. They are not what any one of those versions originally introduced; they are the floor all of them now stand on, so moving up a Mark never costs you something the one below it had.
+These four landed across **KIVO LII, LIII, LIV and LV at the same time**, after each of those releases had already shipped. They are not what any one of those versions originally introduced; they are the floor all of them now stand on, so moving up a KIVO never costs you something the one below it had.
 
 No new dependencies. No bundled asset files. No hardcoded language, and nothing that assumes one operating system.
 
@@ -540,7 +540,7 @@ The part that is easy to get wrong: **a model cannot look something up if it doe
 
 ### ↩️ Undo — it can take back what it did
 
-JARVIS moves files, renames them, writes to them and changes your settings. None of that had a way back; if it misheard you, the only remedy was to fix it by hand.
+KIVO moves files, renames them, writes to them and changes your settings. None of that had a way back; if it misheard you, the only remedy was to fix it by hand.
 
 Say **"undo"** — in any language — and it reverses its own last action:
 
@@ -570,13 +570,13 @@ if action in _DANGEROUS_ACTIONS:            # {"restart", "shutdown"}
 
 `confirmed` is a **tool parameter, which means the model fills it in.** Nothing stopped it sending `confirmed=yes` on the first call and nothing checked that a human was ever involved. It was a convention, not a gate. And its coverage was two actions — so `toggle_wifi`, which cuts the assistant's own connection to the Live API and therefore *cannot be asked to undo itself*, went through with no gate at all.
 
-The token is now issued by the interface. Shutdown, restart and WiFi put a banner on the HUD and **return immediately**; the action runs only if you press CONFIRM. Nothing blocks — JARVIS keeps talking while the banner is up — so this is **cheaper than the old gate**, which burned two tool round trips on every power command.
+The token is now issued by the interface. Shutdown, restart and WiFi put a banner on the HUD and **return immediately**; the action runs only if you press CONFIRM. Nothing blocks — KIVO keeps talking while the banner is up — so this is **cheaper than the old gate**, which burned two tool round trips on every power command.
 
 > The split between the two mechanisms is about reversibility, not about how alarming a word sounds. Anything undoable is done at once; only the genuinely irreversible asks. An assistant that checks with you before turning the volume down is one you stop talking to.
 
 ### 🎧 It finally asks which microphone
 
-Both audio streams opened with no device argument at all, so they always took whatever the OS called "default" — and on Windows that *moves on its own* the moment you plug a headset in. "JARVIS can't hear me" almost always meant "JARVIS is listening to the webcam".
+Both audio streams opened with no device argument at all, so they always took whatever the OS called "default" — and on Windows that *moves on its own* the moment you plug a headset in. "KIVO can't hear me" almost always meant "KIVO is listening to the webcam".
 
 ⚙ → **🎧 AUDIO DEVICES** lets you pick the microphone and the speakers by name. Two things matter more than the dropdown:
 
@@ -615,9 +615,9 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 
 ---
 
-## 🗺️ Mark Roadmap
+## 🗺️ KIVO Roadmap
 
-| Mark | Focus |
+| KIVO | Focus |
 |---|---|
 | **XLIX** | Auto-start · clipboard intelligence · assistant customization |
 | **L** | Session memory · background monitoring · proactive 2.0 · instant vision |
@@ -627,7 +627,7 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 | **LIV** | Holographic avatar · viseme lip-sync · facial acting · face-as-status · push-to-talk · self-echo guard · runtime self-knowledge & limits |
 | **LV** | Video on the HUD · model ladder with measured fallback · split settings drawers · trimmed bundled skill list |
 | **LVI** | Choose your engine · local & third-party models · Whisper + Piper in ~50 languages · language-following voice · ElevenLabs · tool budget for small models · verified outcomes instead of claimed ones · close an app by name · untrusted-content boundary · platform honesty on Wayland and macOS · hardened phone dashboard |
-| *shared* | The last five above also shipped to LIII, LIV and LV at the same time — moving up a Mark never loses them |
+| *shared* | The last five above also shipped to LIII, LIV and LV at the same time — moving up a KIVO never loses them |
 | **LVII+** | Interrupt by voice · conversation history · full file access · security camera · Obsidian |
 
 ---
@@ -635,8 +635,8 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/FatihMakes/Mark-LVI.git
-cd Mark-LVI
+git clone https://github.com/FatihMakes/KIVO.git
+cd KIVO
 python setup.py        # installs deps for YOUR OS + the browser automation engine
 python main.py
 ```
@@ -652,10 +652,10 @@ python main.py
 | Requirement | Details |
 | --- | --- |
 | **OS** | Windows 10/11, macOS, or Linux |
-| **Linux display server** | Everything works on **X11**. On **Wayland** — the default on Ubuntu 22.04+, Fedora and current GNOME/KDE — the system does not permit any program to type, click, capture the screen or raise another window, so those features are unavailable and JARVIS says so at startup instead of pretending. Voice, memory, files, the web and opening applications are unaffected. Log out and pick an Xorg session to get the rest |
+| **Linux display server** | Everything works on **X11**. On **Wayland** — the default on Ubuntu 22.04+, Fedora and current GNOME/KDE — the system does not permit any program to type, click, capture the screen or raise another window, so those features are unavailable and KIVO says so at startup instead of pretending. Voice, memory, files, the web and opening applications are unaffected. Log out and pick an Xorg session to get the rest |
 | **macOS permissions** | Accessibility (to type and click) and Screen Recording (to see the screen), both under System Settings → Privacy & Security. Until granted, those actions silently do nothing — the OS reports success either way |
 | **Python** | 3.11, 3.12 or 3.13 |
-| **Microphone** | Required for voice interaction (and for the "Hey Jarvis" wake word) |
+| **Microphone** | Required for voice interaction (and for the "Hey KIVO" wake word) |
 | **Speakers** | Required for voice replies |
 | **API Key** | Free Gemini API key (entered on first launch → `config/api_keys.json`). Only for the Gemini engine — a fully local setup needs no key and no account |
 | **GPU** | **Not required, anywhere.** The avatar and HUD video are rendered in software; local speech recognition and the neural voice both run on the CPU by default |
@@ -670,7 +670,7 @@ python main.py
 ## 🗂️ Project Structure
 
 ```
-Mark LVI/
+KIVO/
 ├── main.py                   # Core loop — Gemini Live session, audio I/O, viseme extraction, tool dispatch
 ├── ui.py                     # PyQt6 HUD — avatar canvas, waveform, log panel, settings drawer, camera feed
 ├── setup.py                  # OS-aware installer (skips wrong-OS dependencies, checks your Python)
@@ -699,7 +699,7 @@ Mark LVI/
 │   ├── _whatsapp_core.py     # Shared WhatsApp driver — desktop app or Web, all three OSes
 │   ├── whatsapp_call.py      # Place and end WhatsApp voice / video calls
 │   ├── whatsapp_guard.py     # Answer, decline or auto-reply to INCOMING WhatsApp calls
-│   ├── telegram_remote.py    # Drive JARVIS from anywhere over Telegram
+│   ├── telegram_remote.py    # Drive KIVO from anywhere over Telegram
 │   ├── chat_takeover.py      # Reads an on-screen chat and replies in it
 │   ├── screen_agent.py       # Looks at the screen and works it, step by step
 │   ├── gmail_control.py      # Read, search, send and draft email
@@ -771,7 +771,7 @@ Mark LVI/
 │   ├── audio_devices.py      # Microphone / speaker list — filtered, measured, resolved by name
 │   ├── plugin_loader.py      # Plugin engine — discovery, validation, crash isolation
 │   ├── action_loader.py      # Bundled-action engine — the built-in twin of plugin_loader
-│   └── wake_word.py          # Local "Hey Jarvis" detector — own thread, offline, opt-in
+│   └── wake_word.py          # Local "Hey KIVO" detector — own thread, offline, opt-in
 └── config/
     ├── api_keys.json         # API key, name, voice, colour, toggles — created on first launch (git-ignored)
     └── certs/                # Self-signed TLS pair for the phone dashboard — generated locally (git-ignored)
@@ -789,7 +789,7 @@ Mark LVI/
 
 ## 🔒 Your Data
 
-Everything stays on your machine. There is no MARK server, no telemetry and no account.
+Everything stays on your machine. There is no KIVO server, no telemetry and no account.
 
 | What | Where | Notes |
 |---|---|---|
@@ -801,7 +801,7 @@ All three are listed in `.gitignore`, so a fork or a pull request cannot leak th
 
 Your voice is streamed to Google's Gemini Live API while a session is open; that is the one thing that leaves your computer, and it stops when you mute or close the app.
 
-**Mark LVI changes what that sentence can say about you.** Choose a local engine — Whisper on your CPU, a model served by Ollama or LM Studio, your system's own voice — and nothing leaves the machine at all: no audio, no transcript, no key, no account. Choose a hosted provider instead and your audio and text go to that vendor rather than to Google. The panel says which is which, and the assistant never quietly switches between them.
+**KIVO changes what that sentence can say about you.** Choose a local engine — Whisper on your CPU, a model served by Ollama or LM Studio, your system's own voice — and nothing leaves the machine at all: no audio, no transcript, no key, no account. Choose a hosted provider instead and your audio and text go to that vendor rather than to Google. The panel says which is which, and the assistant never quietly switches between them.
 
 ---
 
@@ -814,8 +814,8 @@ Licensed under **[Creative Commons BY-NC 4.0](https://creativecommons.org/licens
 
 ## 👤 Connect with the Creator
 
-Engineered by a developer building a real-world JARVIS-style assistant.
-⭐ **Star the repository to support the journey to Mark 100.**
+Engineered by a developer building a real-world KIVO-style assistant.
+⭐ **Star the repository to support the journey to KIVO 100.**
 
 | Platform | Link |
 | --- | --- |

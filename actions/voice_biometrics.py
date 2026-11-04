@@ -1,7 +1,7 @@
 """
 actions/voice_biometrics.py — Voice biometrics and speaker verification action tool.
 
-Allows JARVIS to check voice security status, toggle speaker verification,
+Allows KIVO to check voice security status, toggle speaker verification,
 or adjust verification sensitivity.
 """
 from __future__ import annotations
@@ -25,11 +25,11 @@ def voice_biometrics_handler(parameters: dict, **kwargs) -> str:
         if not sv.is_enrolled():
             return "Cannot enable speaker verification: please enroll your voice first."
         sv.set_enabled(True)
-        return "Speaker verification is now enabled. JARVIS will only accept commands from your voice."
+        return "Speaker verification is now enabled. KIVO will only accept commands from your voice."
 
     elif action in ("disable", "deactivate"):
         sv.set_enabled(False)
-        return "Speaker verification has been disabled. JARVIS will accept commands from any voice."
+        return "Speaker verification has been disabled. KIVO will accept commands from any voice."
 
     elif action in ("set_threshold", "sensitivity"):
         thresh_val = parameters.get("threshold")
@@ -49,7 +49,7 @@ TOOL = {
     "name": "voice_biometrics",
     "description": (
         "Controls speaker verification and voice biometric security. "
-        "Allows JARVIS to check voice recognition status, enable or disable "
+        "Allows KIVO to check voice recognition status, enable or disable "
         "speaker gating, and adjust the verification security threshold."
     ),
     "parameters": {

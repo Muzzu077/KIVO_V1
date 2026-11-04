@@ -40,12 +40,12 @@ from memory.memory_manager import (
 
 
 def _data_dir() -> Path:
-    override = os.environ.get("MARK_LV_AGENTS_DIR")
+    override = os.environ.get("KIVO_AGENTS_DIR")
     if override:
         return Path(override).expanduser()
     xdg = os.environ.get("XDG_DATA_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
-    return base / "mark-lv" / "agents"
+    return base / "kivo" / "agents"
 
 
 def _slug(text: str, limit: int = 40) -> str:

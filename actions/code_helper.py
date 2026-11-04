@@ -60,7 +60,7 @@ def _resolve_save_path(output_path: str, language: str) -> Path:
         p = Path(output_path)
         return p if p.is_absolute() else DESKTOP / p
     ext = ext_map.get((language or "python").lower(), ".py")
-    return DESKTOP / f"jarvis_code{ext}"
+    return DESKTOP / f"kivo_code{ext}"
 
 
 def _read_file(file_path: str) -> tuple[str, str]:
@@ -98,7 +98,7 @@ def _has_error(output: str) -> bool:
 
 
 def _take_screenshot() -> Path | None:
-    screenshot_path = Path.home() / "Desktop" / f"jarvis_debug_{int(time.time())}.png"
+    screenshot_path = Path.home() / "Desktop" / f"kivo_debug_{int(time.time())}.png"
     screenshot_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         from core.desktop_context import get_desktop_context

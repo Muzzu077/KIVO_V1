@@ -7,7 +7,7 @@
 - systemd/ - Qt-based systemd units
 - .gitignore - kept, will be updated
 - readme.md - will be updated
-- jarvis.log - kept for logs
+- kivo.log - kept for logs
 
 ## Files/Directories Kept:
 - actions/ - core tool implementations

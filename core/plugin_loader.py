@@ -1,7 +1,7 @@
 """
 Plugin discovery, validation, collision detection, and dispatch.
 
-Discovery runs once (JarvisLive.__init__ calls discover_plugins()); the resulting
+Discovery runs once (KivoLive.__init__ calls discover_plugins()); the resulting
 PluginRegistry is cached for the process lifetime. Enable/disable state is re-read
 from config on every call to get_tool_declarations() / run() / list_for_ui(), so
 toggling a plugin does not require restarting the app or re-importing anything.
@@ -272,7 +272,7 @@ def _load_error(path: Path, plugins_dir: Path, exc: Exception) -> str:
                 # advice. These names belong to this project, and telling
                 # somebody to install a same-named stranger from an index is a
                 # supply-chain hazard dressed up as a fix. A plugin written
-                # against a newer Mark reaches this line, and the honest answer
+                # against a newer KIVO reaches this line, and the honest answer
                 # is that the app is behind the plugin, not that a package is
                 # absent.
                 needed = "/".join(missing) + ".py"

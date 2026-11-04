@@ -22,7 +22,7 @@ def measure_import(name: str):
 
 def main():
     print("=" * 60)
-    print(" MARK-LV STARTUP & PERFORMANCE BENCHMARK")
+    print(" KIVO STARTUP & PERFORMANCE BENCHMARK")
     print("=" * 60)
 
     process = psutil.Process(os.getpid())

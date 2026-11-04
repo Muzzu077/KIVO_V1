@@ -41,7 +41,7 @@ class TestIntentRouter(unittest.TestCase):
         self.assertEqual(d.level, Level.AGENT)
 
     def test_dictation(self):
-        d = self.router.classify("JARVIS, draft a polite reply saying I'll finish it tomorrow")
+        d = self.router.classify("KIVO, draft a polite reply saying I'll finish it tomorrow")
         self.assertEqual(d.intent, Intent.DICTATION)
         self.assertFalse(self.router.allows_automation(d))
 

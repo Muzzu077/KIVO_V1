@@ -662,7 +662,7 @@ class DesktopContextService:
         Otherwise captures the full screen.
         """
         if path is None:
-            path = f"/tmp/jarvis_screenshot_{int(time.time() * 1000)}.png"
+            path = f"/tmp/kivo_screenshot_{int(time.time() * 1000)}.png"
 
         if self._backend:
             if window_id is not None and hasattr(self._backend, "screenshot_window"):

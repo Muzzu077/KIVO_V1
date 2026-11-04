@@ -445,7 +445,7 @@ class TerminalController:
         timeout: int = 30,
     ) -> CommandResult:
         """
-        Run a command in JARVIS's own restricted subprocess (not visible to user).
+        Run a command in KIVO's own restricted subprocess (not visible to user).
         Use this for queries like "what directory are we in?" when a subprocess answer
         is acceptable, or when the user doesn't need to see the command run.
         """
@@ -533,7 +533,7 @@ class TerminalController:
 
         time.sleep(wait_seconds)  # allow command to produce output
 
-        path = f"/tmp/jarvis_term_{int(time.time() * 1000)}.png"
+        path = f"/tmp/kivo_term_{int(time.time() * 1000)}.png"
         text = self._ctx.ocr_screenshot(path=path, window_id=window.window_id)
 
         # Clean up
