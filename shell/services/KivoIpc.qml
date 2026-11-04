@@ -118,6 +118,12 @@ Scope {
     property var lastAudioCapture: null
     property string lastAudioError: ""
 
+    // ── STT properties ─────────────────────────────────────────────────────
+    property var sttStatus: null
+    property bool sttTranscribing: false
+    property var lastTranscription: null
+    property var transcriptionHistory: []
+
     // ── Signals ────────────────────────────────────────────────────────────
     signal statusUpdated()
     signal taskUpdated()
@@ -134,6 +140,10 @@ Scope {
     signal audioCaptureCompleted(var metadata)
     signal audioCaptureError(string error)
     signal audioDevicesUpdated(var devices)
+    signal sttStatusUpdated(var status)
+    signal sttTranscriptionStarted(string captureId)
+    signal sttTranscriptionCompleted(var result)
+    signal sttTranscriptionFailed(string error)
 
     // ── Internal state ─────────────────────────────────────────────────────
     property bool _wantConnected: false
@@ -491,6 +501,12 @@ Scope {
                 if (payload.audio.last_capture)
                     lastAudioCapture = payload.audio.last_capture
             }
+            if (_isObject(payload) && _isObject(payload.stt)) {
+                sttStatus = payload.stt
+            }
+            if (_isObject(payload) && Array.isArray(payload.transcriptions)) {
+                transcriptionHistory = payload.transcriptions
+            }
             if (typeof callback === "function")
                 callback(null, payload)
         })
@@ -563,6 +579,39 @@ Scope {
         if (!connected)
             return ""
         return request("audio_cancel_capture", null, callback)
+    }
+
+    // ── STT control ────────────────────────────────────────────────────────
+    function sttGetStatus(callback) {
+        return request("stt_get_status", null, function(error, result) {
+            if (!error && _isObject(result)) {
+                sttStatus = result
+                sttTranscribing = (result.state === "transcribing")
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function sttGetHistory(limit, callback) {
+        var params = { limit: typeof limit === "number" ? limit : 10 }
+        return request("stt_get_history", params, function(error, result) {
+            if (!error && _isObject(result) && Array.isArray(result.history)) {
+                transcriptionHistory = result.history
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function sttUpdateConfig(cfg, callback) {
+        return request("stt_update_config", cfg, function(error, result) {
+            if (!error && _isObject(result) && result.status) {
+                sttStatus = result.status
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
     }
 
     // ── Incoming messages ──────────────────────────────────────────────────
@@ -732,6 +781,27 @@ Scope {
         case "audio_device_changed":
             if (data.name)
                 audioDeviceName = String(data.name)
+            break
+        case "stt_status_changed":
+            sttStatus = _copy(data)
+            sttTranscribing = (data.state === "transcribing")
+            sttStatusUpdated(sttStatus)
+            break
+        case "stt_transcription_started":
+            sttTranscribing = true
+            sttTranscriptionStarted(_text(data, "capture_id", ""))
+            break
+        case "stt_transcription_completed":
+            sttTranscribing = false
+            lastTranscription = _copy(data)
+            sttTranscriptionCompleted(lastTranscription)
+            break
+        case "stt_transcription_empty":
+            sttTranscribing = false
+            break
+        case "stt_transcription_failed":
+            sttTranscribing = false
+            sttTranscriptionFailed(_text(data, "error", "Transcription failed"))
             break
         case "confirmation_required":
             // The backend confirmation gate is intentionally unbound.  Do not

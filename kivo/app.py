@@ -168,6 +168,7 @@ class KivoApp:
 
     def _init_audio(self) -> None:
         from kivo.audio import AudioCaptureManager, AudioDeviceManager, AudioIngress
+        from kivo.stt import FasterWhisperEngine, TranscriptionManager, load_stt_config
 
         device_manager = AudioDeviceManager()
         ingress = AudioIngress()
@@ -177,9 +178,27 @@ class KivoApp:
             on_complete=self._on_audio_complete,
         )
 
+        # Initialize STT engine and TranscriptionManager
+        stt_cfg = load_stt_config()
+        stt_engine = FasterWhisperEngine(
+            model_name=stt_cfg.get("model", "base"),
+            device=stt_cfg.get("device", "cpu"),
+        )
+        transcription_mgr = TranscriptionManager(
+            ingress=ingress,
+            engine=stt_engine,
+            language=stt_cfg.get("language", "auto"),
+            on_status_change=self._on_stt_status_change,
+            on_transcription_started=self._on_stt_started,
+            on_transcription_completed=self._on_stt_completed,
+            on_transcription_failed=self._on_stt_failed,
+        )
+        transcription_mgr.start()
+
         self._components["audio_device_manager"] = device_manager
         self._components["audio_capture_manager"] = capture_manager
         self._components["audio_ingress"] = ingress
+        self._components["transcription_manager"] = transcription_mgr
 
     def _init_ipc(self) -> None:
         from kivo.ipc.handlers import IPCHandlers
@@ -197,6 +216,7 @@ class KivoApp:
                 audio_device_manager=self._components.get("audio_device_manager"),
                 audio_capture_manager=self._components.get("audio_capture_manager"),
                 audio_ingress=self._components.get("audio_ingress"),
+                transcription_manager=self._components.get("transcription_manager"),
             )
             server = IPCServer(
                 self._socket_path,
@@ -349,6 +369,31 @@ class KivoApp:
             ingress.submit(capture)
         self._publish("audio_capture_completed", capture.metadata())
 
+    def _on_stt_status_change(self, status) -> None:
+        self._publish("stt_status_changed", status.to_dict())
+
+    def _on_stt_started(self, capture_id: str) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("thinking", "transcribing speech")
+        self._publish("stt_transcription_started", {"capture_id": capture_id})
+
+    def _on_stt_completed(self, result) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("idle", "transcription ready")
+        # Publish transcript event so both user_transcript and stt_transcription_completed fire
+        self._publish("user_transcript", {
+            "text": result.text,
+            "language": result.language,
+            "duration": result.duration,
+            "capture_id": result.capture_id,
+        })
+        self._publish("stt_transcription_completed", result.to_dict())
+
+    def _on_stt_failed(self, error: str) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("idle", "transcription failed")
+        self._publish("stt_transcription_failed", {"error": error})
+
     @staticmethod
     def _screen_snapshot(frame) -> dict:
         """UI-safe context metadata: no OCR text and no captured image."""
@@ -440,6 +485,14 @@ class KivoApp:
         if confirm is not None:
             try:
                 confirm.bind(None, None, None)
+            except Exception:
+                pass
+
+        # Stop STT background worker and unload model
+        stt_mgr = self._components.get("transcription_manager")
+        if stt_mgr is not None:
+            try:
+                stt_mgr.stop()
             except Exception:
                 pass
 

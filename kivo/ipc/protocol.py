@@ -51,6 +51,16 @@ REQUEST_OPERATIONS = frozenset({
     "audio.stop_capture",
     "audio_cancel_capture",
     "audio.cancel_capture",
+    "stt_get_status",
+    "stt.get_status",
+    "stt_get_history",
+    "stt.get_history",
+    "stt_get_result",
+    "stt.get_result",
+    "stt_update_config",
+    "stt.update_config",
+    "stt_cancel",
+    "stt.cancel",
 })
 
 EVENT_NAMES = (
@@ -77,6 +87,16 @@ EVENT_NAMES = (
     "audio.capture_completed",
     "audio_capture_error",
     "audio.capture_error",
+    "stt_status_changed",
+    "stt.status_changed",
+    "stt_transcription_started",
+    "stt.transcription_started",
+    "stt_transcription_completed",
+    "stt.transcription_completed",
+    "stt_transcription_empty",
+    "stt.transcription_empty",
+    "stt_transcription_failed",
+    "stt.transcription_failed",
     "error",
 )
 EVENT_NAME_SET = frozenset(EVENT_NAMES)
@@ -194,6 +214,20 @@ def decode_request(body: bytes) -> Request:
             raise ProtocolError(
                 exc.code, exc.message, request_id=request_id
             ) from exc
+    elif operation in ("stt_update_config", "stt.update_config"):
+        try:
+            _validate_stt_update_config_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("stt_get_history", "stt.get_history"):
+        try:
+            _validate_stt_get_history_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
     elif params:
         raise ProtocolError(
             "invalid_params",
@@ -226,6 +260,33 @@ def _validate_audio_start_capture_params(params: dict[str, Any]) -> None:
     device = params.get("device")
     if device is not None and not isinstance(device, str):
         raise ProtocolError("invalid_params", "device must be a string")
+
+
+def _validate_stt_update_config_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"language", "model"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    language = params.get("language")
+    if language is not None and not isinstance(language, str):
+        raise ProtocolError("invalid_params", "language must be a string")
+    model = params.get("model")
+    if model is not None and not isinstance(model, str):
+        raise ProtocolError("invalid_params", "model must be a string")
+
+
+def _validate_stt_get_history_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"limit"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    limit = params.get("limit")
+    if limit is not None and not isinstance(limit, (int, float)):
+        raise ProtocolError("invalid_params", "limit must be a number")
 
 
 def _validate_subscription_params(params: dict[str, Any]) -> None:

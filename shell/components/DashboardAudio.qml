@@ -17,6 +17,7 @@ Item {
     readonly property bool online: ipc !== null && ipc.connected === true
     property var devices: []
     property var audioStatus: null
+    property var sttStatus: ipc ? ipc.sttStatus : null
     property string selectedDeviceName: ipc ? ipc.audioDeviceName : ""
     property string statusMessage: ""
     property string errorMessage: ""
@@ -42,6 +43,12 @@ Item {
                 devices = result.devices
             }
         })
+        if (ipc.sttGetStatus) {
+            ipc.sttGetStatus(function(err, res) {
+                if (!err && res)
+                    sttStatus = res
+            })
+        }
     }
 
     Component.onCompleted: {
@@ -76,6 +83,20 @@ Item {
 
         function onAudioDevicesUpdated(devList) {
             page.devices = devList
+        }
+
+        function onSttTranscriptionStarted(capId) {
+            page.statusMessage = "Transcribing speech…"
+        }
+
+        function onSttTranscriptionCompleted(result) {
+            page.statusMessage = "Transcription ready"
+            if (page.ipc && page.ipc.sttGetHistory)
+                page.ipc.sttGetHistory(5, null)
+        }
+
+        function onSttTranscriptionFailed(err) {
+            page.errorMessage = err || "Speech recognition failed"
         }
     }
 
@@ -224,7 +245,7 @@ Item {
                 }
             }
 
-            // Card 2: Selected Microphone
+            // Card 2: STT Engine & Language
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: parent.height
@@ -239,27 +260,117 @@ Item {
                     spacing: 4
 
                     Text {
-                        text: "SELECTED MICROPHONE"
+                        text: "SPEECH RECOGNITION (STT)"
                         font.pixelSize: Theme.fontCaption - 1
                         font.bold: true
                         color: Theme.textMuted
                         font.letterSpacing: 0.5
                     }
 
-                    Text {
-                        text: page.selectedDeviceName.length > 0 ? page.selectedDeviceName : "System Default"
-                        font.pixelSize: Theme.fontBody
-                        font.bold: true
-                        color: Theme.accent
-                        elide: Text.ElideRight
+                    RowLayout {
                         width: parent.width
+                        spacing: 6
+
+                        Text {
+                            text: (page.sttStatus ? page.sttStatus.engine : "faster-whisper")
+                                + " (" + (page.sttStatus ? page.sttStatus.model : "base") + ")"
+                            font.pixelSize: Theme.fontBody
+                            font.bold: true
+                            color: Theme.accent
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        // Language badge / toggle
+                        Rectangle {
+                            Layout.preferredWidth: langText.implicitWidth + 12
+                            Layout.preferredHeight: 20
+                            radius: 6
+                            color: Theme.surfaceRaised
+                            border.width: 1
+                            border.color: Theme.border
+
+                            Text {
+                                id: langText
+                                anchors.centerIn: parent
+                                text: "Lang: " + (page.sttStatus ? page.sttStatus.language : "auto")
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textSecondary
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: {
+                                    var current = page.sttStatus ? page.sttStatus.language : "auto"
+                                    var next = "auto"
+                                    if (current === "auto") next = "en"
+                                    else if (current === "en") next = "hi"
+                                    else if (current === "hi") next = "te"
+                                    else next = "auto"
+                                    if (page.ipc && page.ipc.sttUpdateConfig) {
+                                        page.ipc.sttUpdateConfig({ language: next }, function(err, res) {
+                                            if (!err && res && res.status)
+                                                page.sttStatus = res.status
+                                        })
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     Text {
-                        text: page.devices.length + " input devices discovered"
-                        font.pixelSize: Theme.fontCaption
+                        text: "CTranslate2 int8 on CPU · local & private"
+                        font.pixelSize: Theme.fontCaption - 1
                         color: Theme.textSecondary
                     }
+                }
+            }
+        }
+
+        // ── Latest Recognized Speech ─────────────────────────────────────────
+        Rectangle {
+            width: parent.width
+            height: 64
+            radius: 12
+            color: Theme.surfaceSunken
+            border.width: 1
+            border.color: Theme.divider
+
+            Column {
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 2
+
+                RowLayout {
+                    width: parent.width
+                    Text {
+                        text: "LATEST RECOGNIZED SPEECH"
+                        font.pixelSize: Theme.fontCaption - 1
+                        font.bold: true
+                        color: Theme.textMuted
+                        font.letterSpacing: 0.5
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        visible: page.ipc && page.ipc.lastTranscript && page.ipc.lastTranscript.length > 0
+                        text: "✓ recognized"
+                        font.pixelSize: Theme.fontCaption - 1
+                        color: Theme.mint
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    text: (page.ipc && page.ipc.lastTranscript && page.ipc.lastTranscript.length > 0)
+                        ? "\"" + page.ipc.lastTranscript + "\""
+                        : "No recent speech. Hold Push-to-Talk to speak to KIVO."
+                    font.pixelSize: Theme.fontBody
+                    font.italic: !(page.ipc && page.ipc.lastTranscript && page.ipc.lastTranscript.length > 0)
+                    color: (page.ipc && page.ipc.lastTranscript && page.ipc.lastTranscript.length > 0)
+                        ? Theme.textPrimary : Theme.textMuted
+                    elide: Text.ElideRight
+                    maximumLineCount: 2
+                    wrapMode: Text.WordWrap
                 }
             }
         }
@@ -275,7 +386,7 @@ Item {
 
         Rectangle {
             width: parent.width
-            height: 280
+            height: 180
             radius: 12
             color: Theme.surfaceSunken
             border.width: 1

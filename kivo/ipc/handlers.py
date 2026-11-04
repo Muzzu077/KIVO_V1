@@ -23,6 +23,7 @@ class IPCHandlers:
         audio_device_manager=None,
         audio_capture_manager=None,
         audio_ingress=None,
+        transcription_manager=None,
     ):
         self._state = state
         self._drive = drive
@@ -30,6 +31,7 @@ class IPCHandlers:
         self._audio_dm = audio_device_manager
         self._audio_cm = audio_capture_manager
         self._audio_ingress = audio_ingress
+        self._stt = transcription_manager
 
     def get_status(self) -> dict:
         snapshot = self._state.snapshot()
@@ -50,6 +52,8 @@ class IPCHandlers:
         }
         if self._audio_dm is not None:
             status_dict["audio"] = self.audio_get_status()
+        if self._stt is not None:
+            status_dict["stt"] = self.stt_get_status()
         return status_dict
 
     def get_current_task(self) -> dict:
@@ -66,6 +70,9 @@ class IPCHandlers:
         }
         if self._audio_dm is not None:
             data["audio"] = self.audio_get_status()
+        if self._stt is not None:
+            data["stt"] = self.stt_get_status()
+            data["transcriptions"] = self._stt.get_history(limit=10)
         return data
 
     def cancel_active_task(self) -> dict:
@@ -160,6 +167,55 @@ class IPCHandlers:
             return {"ok": False}
         ok = self._audio_cm.cancel_capture()
         return {"ok": ok}
+
+    # ── STT operations ─────────────────────────────────────────────────────
+
+    def stt_get_status(self) -> dict:
+        if self._stt is None:
+            return {
+                "available": False,
+                "state": "unavailable",
+                "engine": "none",
+                "model": "none",
+                "language": "auto",
+                "queue_size": 0,
+                "last_result": None,
+                "error_message": "STT subsystem is not initialized",
+            }
+        return self._stt.get_status().to_dict()
+
+    def stt_get_history(self, params: dict | None = None) -> dict:
+        if self._stt is None:
+            return {"history": []}
+        limit = 10
+        if params and isinstance(params, dict):
+            try:
+                limit = max(1, min(30, int(params.get("limit", 10))))
+            except (ValueError, TypeError):
+                limit = 10
+        return {"history": self._stt.get_history(limit=limit)}
+
+    def stt_get_result(self, params: dict | None = None) -> dict:
+        if self._stt is None:
+            return {"result": None}
+        latest = self._stt.get_latest_result()
+        return {"result": latest.to_dict() if latest else None}
+
+    def stt_update_config(self, params: dict | None = None) -> dict:
+        if self._stt is None:
+            return {"ok": False, "error": "STT subsystem is not initialized"}
+        if not params or not isinstance(params, dict):
+            return {"ok": False, "error": "Missing parameters"}
+        lang = params.get("language")
+        if lang is not None:
+            self._stt.set_language(str(lang))
+        return {"ok": True, "status": self.stt_get_status()}
+
+    def stt_cancel(self) -> dict:
+        # In single-shot PTT, cancellation stops any queued audio
+        if self._stt is None:
+            return {"ok": False}
+        return {"ok": True}
 
     def _drive_snapshot(self) -> dict:
         state = self._drive.snapshot()

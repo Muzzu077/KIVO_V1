@@ -1140,6 +1140,33 @@ class NotchIntegrationTest(unittest.TestCase):
         )
         shell.wait_snapshot(lambda item: item.get("audioCapturing") is False, timeout=8)
 
+    def test_stt_transcription_events_and_notch_state(self) -> None:
+        backend = self.start_backend()
+        shell = self.start_shell(backend)
+        shell.wait_state("idle")
+
+        # Backend simulates STT start
+        backend.publish(
+            "stt_transcription_started",
+            {"capture_id": "cap-abc"},
+        )
+        shell.wait_snapshot(lambda item: item.get("sttTranscribing") is True, timeout=8)
+
+        # Backend publishes recognized transcript
+        backend.publish(
+            "user_transcript",
+            {"text": "Hello KIVO Assistant", "language": "en", "duration": 1.2, "capture_id": "cap-abc"},
+        )
+        backend.publish(
+            "stt_transcription_completed",
+            {"text": "Hello KIVO Assistant", "language": "en", "duration": 1.2, "capture_id": "cap-abc"},
+        )
+        snap = shell.wait_snapshot(
+            lambda item: item.get("sttTranscribing") is False and "Hello KIVO Assistant" in item.get("lastTranscript", ""),
+            timeout=8,
+        )
+        self.assertEqual(snap.get("lastTranscript"), "Hello KIVO Assistant")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

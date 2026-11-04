@@ -166,7 +166,7 @@ Item {
     readonly property string stateLabel: {
         switch (visualState) {
         case "listening": return notch.audioState === "capturing" ? "Recording" : "Listening"
-        case "thinking": return "Thinking"
+        case "thinking": return (notch.ipc && notch.ipc.sttTranscribing) ? "Understanding…" : "Thinking"
         case "speaking": return "Speaking"
         case "driving": return "Driving"
         case "success": return "Done"
@@ -194,7 +194,7 @@ Item {
     readonly property string collapsedLabel: {
         switch (visualState) {
         case "listening": return notch.audioState === "capturing" ? "Recording…" : "Listening"
-        case "thinking": return "Thinking"
+        case "thinking": return (notch.ipc && notch.ipc.sttTranscribing) ? "Understanding…" : "Thinking"
         case "speaking": return "Speaking"
         case "driving": return taskTitle.length > 0 ? taskTitle : "Working"
         case "success": return "Done"
@@ -664,6 +664,26 @@ Item {
             notch.showTransient("error", "Capture Error",
                                 error || "Microphone capture failed",
                                 3500, false)
+        }
+
+        function onSttTranscriptionStarted(captureId) {
+            notch.showTransient("thinking", "Transcribing…",
+                                "Understanding speech…", 4000, false)
+        }
+
+        function onSttTranscriptionCompleted(result) {
+            if (result && result.text) {
+                notch.showTransient("success", "Heard",
+                                    result.text, 3500, false)
+            } else {
+                notch.showTransient("neutral", "No speech detected",
+                                    "Recording was silent or unrecognized", 2500, false)
+            }
+        }
+
+        function onSttTranscriptionFailed(error) {
+            notch.showTransient("error", "Transcription failed",
+                                error || "Speech recognition error", 3500, false)
         }
     }
 
