@@ -137,6 +137,7 @@ Scope {
     property string activeAgentTool: ""
     property string activeAgentToolStatus: ""
     property var toolExecutionLog: []
+    property var pendingCommandApproval: null
 
     // ── Signals ────────────────────────────────────────────────────────────
     signal statusUpdated()
@@ -167,6 +168,8 @@ Scope {
     signal conversationCancelled()
     signal agentToolStarted(string name, string callId)
     signal agentToolCompleted(var result)
+    signal commandApprovalRequested(var request)
+    signal commandApprovalResolved(var result)
 
     // ── Internal state ─────────────────────────────────────────────────────
     property bool _wantConnected: false
@@ -722,6 +725,27 @@ Scope {
         })
     }
 
+    // ── Command approval control ───────────────────────────────────────────
+    function commandResolveApproval(token, approved, callback) {
+        return request("command_resolve_approval", { "token": String(token), "approved": approved === true }, function(error, result) {
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function commandGetPendingApprovals(callback) {
+        return request("command_get_pending_approvals", null, function(error, result) {
+            if (!error && _isObject(result) && Array.isArray(result.pending)) {
+                if (result.pending.length > 0)
+                    pendingCommandApproval = result.pending[0]
+                else
+                    pendingCommandApproval = null
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
     // ── Incoming messages ──────────────────────────────────────────────────
     function _handleLine(line) {
         if (typeof line !== "string")
@@ -967,6 +991,15 @@ Scope {
             tlog.push(_copy(data))
             toolExecutionLog = tlog
             agentToolCompleted(data)
+            break
+        case "command_approval_requested":
+            pendingCommandApproval = _copy(data)
+            commandApprovalRequested(data)
+            break
+        case "command_approval_resolved":
+            if (pendingCommandApproval && pendingCommandApproval.token === data.token)
+                pendingCommandApproval = null
+            commandApprovalResolved(data)
             break
         case "confirmation_required":
             // The backend confirmation gate is intentionally unbound.  Do not

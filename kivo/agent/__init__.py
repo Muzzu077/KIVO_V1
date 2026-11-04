@@ -1,7 +1,11 @@
 """KIVO Agent runtime and tool subsystem."""
 from __future__ import annotations
 
+from typing import Optional
+
 from kivo.agent.agent_runtime import AgentRuntime
+from kivo.agent.approval_gate import ApprovalGate, ApprovalRequest, ApprovalStatus
+from kivo.agent.terminal import create_terminal_tool
 from kivo.agent.tool_executor import ToolExecutor
 from kivo.agent.tool_policy import ToolPolicyError
 from kivo.agent.tool_registry import ToolRegistry
@@ -15,16 +19,21 @@ from kivo.agent.tools.system_info import SYSTEM_OVERVIEW_TOOL
 from kivo.agent.tools.time_info import CURRENT_TIME_TOOL
 
 
-def create_default_tool_registry() -> ToolRegistry:
-    """Create a ToolRegistry pre-populated with KIVO's built-in safe read-only tools."""
+def create_default_tool_registry(approval_gate: Optional[ApprovalGate] = None) -> ToolRegistry:
+    """Create a ToolRegistry pre-populated with KIVO's built-in safe read-only tools and terminal inspection."""
     registry = ToolRegistry()
     registry.register(CURRENT_TIME_TOOL)
     registry.register(SYSTEM_OVERVIEW_TOOL)
+    if approval_gate is not None:
+        registry.register(create_terminal_tool(approval_gate))
     return registry
 
 
 __all__ = [
     "AgentRuntime",
+    "ApprovalGate",
+    "ApprovalRequest",
+    "ApprovalStatus",
     "ToolRegistry",
     "ToolExecutor",
     "ToolDefinition",

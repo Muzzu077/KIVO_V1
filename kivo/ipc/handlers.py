@@ -317,6 +317,24 @@ class IPCHandlers:
         except Exception as exc:
             return {"ok": False, "message": str(exc)}
 
+    # ── Command execution & approval operations ────────────────────────────
+
+    def command_resolve_approval(self, params: dict | None = None) -> dict:
+        if self._conv is None:
+            return {"ok": False, "message": "Conversation subsystem not initialized"}
+        if not params or not isinstance(params, dict):
+            return {"ok": False, "message": "Missing parameters"}
+        token = str(params.get("token", "")).strip()
+        approved = bool(params.get("approved", False))
+        ok, msg = self._conv.resolve_command_approval(token, approved)
+        return {"ok": ok, "message": msg}
+
+    def command_get_pending_approvals(self) -> dict:
+        if self._conv is None:
+            return {"ok": True, "pending": []}
+        pending = self._conv.get_pending_approvals()
+        return {"ok": True, "pending": pending}
+
     def _drive_snapshot(self) -> dict:
         state = self._drive.snapshot()
         return {

@@ -732,6 +732,21 @@ Item {
                                     result.error_message || "Tool execution failed", 3000, false)
             }
         }
+
+        function onCommandApprovalRequested(request) {
+            var cmd = request && request.command ? request.command : "command"
+            notch.showTransient("warning", "Approval Needed",
+                                "Command proposed: " + cmd + " (Check Dashboard)", 5000, false)
+        }
+
+        function onCommandApprovalResolved(result) {
+            var st = result && result.status ? result.status : ""
+            if (st === "approved") {
+                notch.showTransient("success", "Approved", "Executing command…", 2000, false)
+            } else if (st === "rejected") {
+                notch.showTransient("cancelled", "Rejected", "Command was cancelled", 2500, false)
+            }
+        }
     }
 
     Timer {

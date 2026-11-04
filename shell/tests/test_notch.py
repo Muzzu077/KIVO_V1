@@ -1205,6 +1205,35 @@ class NotchIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(snap.get("lastAssistantResponse"), "Python is a programming language.")
 
+    def test_command_approval_events_and_notch_state(self) -> None:
+        backend = self.start_backend()
+        shell = self.start_shell(backend)
+        shell.wait_state("idle")
+
+        # Backend simulates command approval requested
+        backend.publish(
+            "command_approval_requested",
+            {
+                "token": "tok-123",
+                "command": "df",
+                "arguments": ["-h"],
+                "working_directory": "/home/user",
+                "reason": "check disk space",
+            },
+        )
+        snap = shell.wait_snapshot(
+            lambda item: item.get("transientState") == "warning" and "Approval" in item.get("transientTitle", ""),
+            timeout=8,
+        )
+        self.assertEqual(snap.get("transientState"), "warning")
+
+        # Backend simulates approval resolved
+        backend.publish(
+            "command_approval_resolved",
+            {"token": "tok-123", "approved": True, "status": "approved"},
+        )
+        shell.wait_snapshot(lambda item: item.get("transientState") == "success", timeout=8)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

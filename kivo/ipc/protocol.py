@@ -77,6 +77,10 @@ REQUEST_OPERATIONS = frozenset({
     "conversation.list_models",
     "conversation_test_connection",
     "conversation.test_connection",
+    "command_resolve_approval",
+    "command.resolve_approval",
+    "command_get_pending_approvals",
+    "command.get_pending_approvals",
 })
 
 EVENT_NAMES = (
@@ -131,6 +135,10 @@ EVENT_NAMES = (
     "agent.tool_started",
     "agent_tool_completed",
     "agent.tool_completed",
+    "command_approval_requested",
+    "command.approval_requested",
+    "command_approval_resolved",
+    "command.approval_resolved",
     "error",
 )
 EVENT_NAME_SET = frozenset(EVENT_NAMES)
@@ -283,6 +291,13 @@ def decode_request(body: bytes) -> Request:
             raise ProtocolError(
                 exc.code, exc.message, request_id=request_id
             ) from exc
+    elif operation in ("command_resolve_approval", "command.resolve_approval"):
+        try:
+            _validate_command_resolve_approval_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
     elif params:
         raise ProtocolError(
             "invalid_params",
@@ -378,6 +393,21 @@ def _validate_conversation_update_config_params(params: dict[str, Any]) -> None:
     api_key = params.get("api_key")
     if api_key is not None and not isinstance(api_key, str):
         raise ProtocolError("invalid_params", "api_key must be a string")
+
+
+def _validate_command_resolve_approval_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"token", "approved"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    token = params.get("token")
+    if not isinstance(token, str) or not token.strip():
+        raise ProtocolError("invalid_params", "token must be a non-empty string")
+    approved = params.get("approved")
+    if not isinstance(approved, bool):
+        raise ProtocolError("invalid_params", "approved must be a boolean")
 
 
 def _validate_subscription_params(params: dict[str, Any]) -> None:

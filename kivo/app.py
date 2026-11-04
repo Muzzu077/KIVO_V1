@@ -207,6 +207,8 @@ class KivoApp:
             on_cancelled=self._on_conversation_cancelled,
             on_tool_started=self._on_agent_tool_started,
             on_tool_completed=self._on_agent_tool_completed,
+            on_approval_requested=self._on_command_approval_requested,
+            on_approval_resolved=self._on_command_approval_resolved,
         )
 
         self._components["audio_device_manager"] = device_manager
@@ -473,6 +475,14 @@ class KivoApp:
 
     def _on_agent_tool_completed(self, result) -> None:
         self._publish("agent_tool_completed", result.to_dict())
+
+    def _on_command_approval_requested(self, req_dict: dict) -> None:
+        if self._runtime_state is not None:
+            self._runtime_state.set_assistant_state("thinking", "awaiting command approval")
+        self._publish("command_approval_requested", req_dict)
+
+    def _on_command_approval_resolved(self, res_dict: dict) -> None:
+        self._publish("command_approval_resolved", res_dict)
 
     @staticmethod
     def _screen_snapshot(frame) -> dict:

@@ -484,6 +484,169 @@ Item {
             }
         }
 
+        // ── Pending Command Approval Card ────────────────────────────────────
+        Rectangle {
+            id: approvalCard
+            width: parent.width
+            height: approvalCol.implicitHeight + 16
+            visible: page.ipc && page.ipc.pendingCommandApproval !== null
+            radius: 10
+            color: Qt.rgba(Theme.warning.r, Theme.warning.g, Theme.warning.b, 0.12)
+            border.width: 1
+            border.color: Theme.warning
+
+            Column {
+                id: approvalCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 10
+                spacing: 6
+
+                RowLayout {
+                    width: parent.width
+
+                    Row {
+                        spacing: 6
+                        Rectangle {
+                            width: 8
+                            height: 8
+                            radius: 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: Theme.warning
+                        }
+                        Text {
+                            text: "TERMINAL COMMAND APPROVAL REQUIRED"
+                            font.pixelSize: Theme.fontCaption
+                            font.bold: true
+                            color: Theme.warning
+                        }
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Text {
+                        text: "Expires in ~60s"
+                        font.pixelSize: Theme.fontCaption - 1
+                        color: Theme.textMuted
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    text: page.ipc && page.ipc.pendingCommandApproval ? page.ipc.pendingCommandApproval.reason : ""
+                    font.pixelSize: Theme.fontBody
+                    color: Theme.textPrimary
+                    wrapMode: Text.WordWrap
+                }
+
+                // Command details box
+                Rectangle {
+                    width: parent.width
+                    height: cmdDetailsCol.implicitHeight + 12
+                    radius: 6
+                    color: Theme.surfaceSunken
+                    border.width: 1
+                    border.color: Theme.border
+
+                    Column {
+                        id: cmdDetailsCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 8
+                        spacing: 3
+
+                        Text {
+                            text: "Command: " + (page.ipc && page.ipc.pendingCommandApproval ? (page.ipc.pendingCommandApproval.command + " " + page.ipc.pendingCommandApproval.arguments.join(" ")) : "")
+                            font.family: Theme.monoFamily
+                            font.pixelSize: Theme.fontCaption
+                            font.bold: true
+                            color: Theme.mint
+                            elide: Text.ElideRight
+                            width: parent.width
+                        }
+
+                        Text {
+                            text: "Directory: " + (page.ipc && page.ipc.pendingCommandApproval ? page.ipc.pendingCommandApproval.working_directory : "")
+                            font.family: Theme.monoFamily
+                            font.pixelSize: Theme.fontCaption - 1
+                            color: Theme.textMuted
+                            elide: Text.ElideRight
+                            width: parent.width
+                        }
+
+                        Text {
+                            text: "⚠️ Output will be shared with your configured AI provider."
+                            font.pixelSize: Theme.fontCaption - 1
+                            color: Theme.textSecondary
+                        }
+                    }
+                }
+
+                // Actions: Approve / Reject
+                RowLayout {
+                    width: parent.width
+                    spacing: 10
+
+                    Item { Layout.fillWidth: true }
+
+                    // Reject Button
+                    Rectangle {
+                        Layout.preferredWidth: 80
+                        Layout.preferredHeight: 28
+                        radius: 6
+                        color: Theme.surfaceRaised
+                        border.width: 1
+                        border.color: Theme.border
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Reject"
+                            font.pixelSize: Theme.fontCaption
+                            color: Theme.textSecondary
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                if (page.ipc && page.ipc.pendingCommandApproval) {
+                                    page.ipc.commandResolveApproval(page.ipc.pendingCommandApproval.token, false, null)
+                                }
+                            }
+                        }
+                    }
+
+                    // Approve Button
+                    Rectangle {
+                        Layout.preferredWidth: 120
+                        Layout.preferredHeight: 28
+                        radius: 6
+                        color: Theme.accent
+                        border.width: 1
+                        border.color: Theme.accentStrong
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Approve & Run"
+                            font.pixelSize: Theme.fontCaption
+                            font.bold: true
+                            color: "#000000"
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                if (page.ipc && page.ipc.pendingCommandApproval) {
+                                    page.ipc.commandResolveApproval(page.ipc.pendingCommandApproval.token, true, null)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Active Tool Execution Activity Banner ────────────────────────────
         Rectangle {
             width: parent.width
@@ -533,7 +696,7 @@ Item {
         // ── Message Thread (ListView) ───────────────────────────────────────
         Rectangle {
             width: parent.width
-            height: page.showModelPicker ? 200 : 310
+            height: page.showModelPicker ? 180 : ((page.ipc && page.ipc.pendingCommandApproval) ? 220 : 310)
             radius: 12
             color: Theme.surfaceSunken
             border.width: 1

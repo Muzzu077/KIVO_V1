@@ -7,6 +7,7 @@ import time
 from typing import Callable, Optional
 
 from kivo.agent.agent_runtime import AgentRuntime
+from kivo.agent.approval_gate import ApprovalGate
 from kivo.agent.tool_registry import ToolRegistry
 from kivo.agent.tool_schema import ToolResult
 from kivo.agent import create_default_tool_registry
@@ -49,6 +50,9 @@ class ConversationManager:
         on_cancelled: Optional[Callable[[], None]] = None,
         on_tool_started: Optional[Callable[[str, str], None]] = None,
         on_tool_completed: Optional[Callable[[ToolResult], None]] = None,
+        on_approval_requested: Optional[Callable[[dict], None]] = None,
+        on_approval_resolved: Optional[Callable[[dict], None]] = None,
+        approval_gate: Optional[ApprovalGate] = None,
     ):
         self._cfg = load_conversation_config()
         self._context_manager = context_manager or ContextManager(
@@ -60,7 +64,16 @@ class ConversationManager:
         else:
             self._provider = self._create_provider_from_config(self._cfg)
 
-        self._tool_registry = tool_registry or create_default_tool_registry()
+        self._on_approval_requested = on_approval_requested
+        self._on_approval_resolved = on_approval_resolved
+
+        self._approval_gate = approval_gate or ApprovalGate(
+            timeout_seconds=60.0,
+            on_approval_requested=self._on_approval_req_callback,
+            on_approval_resolved=self._on_approval_res_callback,
+        )
+
+        self._tool_registry = tool_registry or create_default_tool_registry(self._approval_gate)
         self._agent_runtime = AgentRuntime(
             provider=self._provider,
             registry=self._tool_registry,
@@ -240,9 +253,37 @@ class ConversationManager:
         future = asyncio.run_coroutine_threadsafe(self._provider.test_connection(), self._loop)
         return future.result(timeout=12.0)
 
+    def _on_approval_req_callback(self, req_dict: dict) -> None:
+        with self._lock:
+            self._state = "thinking"
+            cmd = req_dict.get("command", "")
+            self._last_preview = f"KIVO proposed terminal command: {cmd} (awaiting your approval)"
+        self._notify_state()
+        if self._on_approval_requested is not None:
+            try:
+                self._on_approval_requested(req_dict)
+            except Exception:
+                pass
+
+    def _on_approval_res_callback(self, res_dict: dict) -> None:
+        if self._on_approval_resolved is not None:
+            try:
+                self._on_approval_resolved(res_dict)
+            except Exception:
+                pass
+
+    def resolve_command_approval(self, token: str, approved: bool) -> tuple[bool, str]:
+        """Resolve a pending terminal command confirmation token."""
+        return self._approval_gate.resolve(token, approved)
+
+    def get_pending_approvals(self) -> list[dict]:
+        """Return currently open approval requests."""
+        return self._approval_gate.get_pending_requests()
+
     def clear(self) -> None:
         """Reset conversation context."""
         self.cancel_active()
+        self._approval_gate.cancel_all()
         self._context_manager.clear()
         with self._lock:
             self._state = "idle"
@@ -423,6 +464,7 @@ class ConversationManager:
 
     def cancel_active(self) -> bool:
         """Cancel the current in-flight LLM generation task."""
+        self._approval_gate.cancel_all()
         with self._lock:
             task = self._active_task
             self._active_task = None
@@ -441,6 +483,7 @@ class ConversationManager:
     def close(self) -> None:
         """Stop background event loop and release provider connections."""
         self.cancel_active()
+        self._approval_gate.cancel_all()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread and self._loop_thread.is_alive():
