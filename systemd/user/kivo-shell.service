@@ -1,0 +1,18 @@
+[Unit]
+Description=KIVO Shell
+After=graphical-session.target
+After=kivo-backend.service
+Wants=kivo-backend.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/qs -n -p %h/Projects/KIVO_V1/shell
+WorkingDirectory=%h/Projects/KIVO_V1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+Environment=QS_DISABLE_CRASH_HANDLER=1
+
+[Install]
+WantedBy=graphical-session.target
