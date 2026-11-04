@@ -78,6 +78,18 @@ class TerminalCommandPolicyTest(unittest.TestCase):
         with self.assertRaises(CommandPolicyError):
             validate_terminal_command("ls", ["--exec=sh"])
 
+    def test_ls_recursive_flag_strictly_rejected(self):
+        # SEC-06: recursive directory scan is prohibited
+        with self.assertRaises(CommandPolicyError):
+            validate_terminal_command("ls", ["-R"])
+        with self.assertRaises(CommandPolicyError):
+            validate_terminal_command("ls", ["-laR"])
+
+    def test_du_excessive_depth_rejected(self):
+        # SEC-06: depth capped at 3
+        with self.assertRaises(CommandPolicyError):
+            validate_terminal_command("du", ["--max-depth=4"])
+
     def test_excessive_arguments_count_rejected(self):
         too_many = [f"arg_{i}" for i in range(25)]
         with self.assertRaises(CommandPolicyError):
@@ -286,6 +298,70 @@ class TerminalToolIntegrationTest(unittest.TestCase):
             self.assertIn("rejected", res["error"])
 
         asyncio.run(run_test())
+
+    def test_tool_call_id_preserved_through_approval(self):
+        # SEC-05: tool_call_id must not be empty or lost
+        gate = ApprovalGate(timeout_seconds=5.0)
+        tool = create_terminal_tool(gate)
+
+        async def run_test():
+            tool_task = asyncio.create_task(
+                tool.handler(
+                    {"command": "uname", "arguments": ["-s"], "reason": "test"},
+                    tool_call_id="call_real_id_999",
+                )
+            )
+            await asyncio.sleep(0.05)
+            pending = gate.get_pending_requests()
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["tool_call_id"], "call_real_id_999")
+            gate.resolve(pending[0]["token"], approved=True)
+            await tool_task
+
+        asyncio.run(run_test())
+
+    def test_central_audit_log_records_approval_and_execution(self):
+        # SEC-04: audit log integration
+        from core.action_policy import get_audit_log
+        gate = ApprovalGate(timeout_seconds=5.0)
+        tool = create_terminal_tool(gate)
+
+        async def run_test():
+            tool_task = asyncio.create_task(
+                tool.handler(
+                    {"command": "uname", "arguments": ["-s"], "reason": "audit test"},
+                    tool_call_id="call_audit_1",
+                )
+            )
+            await asyncio.sleep(0.05)
+            pending = gate.get_pending_requests()
+            token = pending[0]["token"]
+            gate.resolve(token, approved=True)
+            await tool_task
+
+            log = get_audit_log()
+            # Must contain records for run_readonly_command
+            cmd_entries = [e for e in log if getattr(e, "tool", None) == "run_readonly_command"]
+            self.assertGreaterEqual(len(cmd_entries), 1)
+            actions = [getattr(e, "action", "") for e in cmd_entries]
+            self.assertIn("uname", actions)
+
+        asyncio.run(run_test())
+
+    def test_legacy_terminal_actions_strictly_denied(self):
+        # SEC-01: legacy actions must reject shell execution
+        from actions.terminal_control_action import terminal_control
+        for bad_action in ("run", "run_and_read", "execute_bg", "subprocess", "exec", "type", "type_command"):
+            out = terminal_control({"action": bad_action, "command": "rm -rf /"})
+            self.assertIn("disabled for security", out)
+
+    def test_action_policy_denies_legacy_terminal(self):
+        # SEC-01: action_policy.check must deny legacy terminal execution
+        from core.action_policy import check, Control, Risk
+        for bad_action in ("run", "run_and_read", "execute_bg", "subprocess", "exec", "type", "type_command"):
+            risk, ctrl, denial = check("terminal_control", bad_action, {"command": "echo hi"})
+            self.assertEqual(ctrl, Control.DENY)
+            self.assertIn("disabled", denial.lower())
 
 
 if __name__ == "__main__":

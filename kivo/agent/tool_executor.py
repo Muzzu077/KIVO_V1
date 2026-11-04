@@ -60,13 +60,21 @@ class ToolExecutor:
 
         timeout = min(tool_def.timeout_seconds, MAX_EXECUTION_TIMEOUT)
         try:
+            sig = inspect.signature(tool_def.handler)
+            extra_kwargs: dict[str, Any] = {}
+            if "tool_call_id" in sig.parameters:
+                extra_kwargs["tool_call_id"] = call.tool_call_id
+
             if inspect.iscoroutinefunction(tool_def.handler):
-                output = await asyncio.wait_for(tool_def.handler(call.arguments), timeout=timeout)
+                output = await asyncio.wait_for(
+                    tool_def.handler(call.arguments, **extra_kwargs),
+                    timeout=timeout,
+                )
             else:
                 # Run synchronous handler in default loop executor
                 loop = asyncio.get_running_loop()
                 output = await asyncio.wait_for(
-                    loop.run_in_executor(None, tool_def.handler, call.arguments),
+                    loop.run_in_executor(None, lambda: tool_def.handler(call.arguments, **extra_kwargs)),
                     timeout=timeout,
                 )
             execution_time = time.monotonic() - t0

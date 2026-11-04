@@ -29,57 +29,16 @@ def terminal_control(parameters: dict, response=None, session_memory=None, playe
             window_id = None
 
     if action in ("type", "type_command"):
-        if not command:
-            return "Please provide a 'command' to type into the terminal."
-        press_enter = bool(parameters.get("press_enter", True))
-        
-        # If no terminal open, open one first
-        terms = tc.list_terminals()
-        if not terms:
-            tc.open_terminal(directory=directory)
-            time.sleep(0.5)
-
-        res = tc.type_command_in_terminal(command=command, press_enter=press_enter)
-        if res.success:
-            return f"Typed command into terminal: '{command}'"
-        return f"Failed to type command: {res.error}"
-
-    elif action in ("run", "run_and_read"):
-        if not command:
-            return "Please provide a 'command' to run."
-
-        # If background execution requested
-        if parameters.get("background", False):
-            sub_res = tc.run_in_subprocess(command=command, cwd=directory)
-            if sub_res.success:
-                return f"Subprocess output:\n{sub_res.output}"
-            return f"Subprocess failed:\n{sub_res.error or sub_res.output}"
-
-        # Interactive terminal typing + OCR capture
-        terms = tc.list_terminals()
-        if not terms:
-            tc.open_terminal(directory=directory)
-            time.sleep(0.6)
-
-        wait_sec = float(parameters.get("wait_seconds", 1.5))
-        type_res = tc.type_command_in_terminal(command=command, press_enter=True)
-        if not type_res.success:
-            return f"Could not type into terminal: {type_res.error}"
-
-        time.sleep(wait_sec)
-        screen_output = tc.capture_terminal_output(wait_seconds=0.2)
         return (
-            f"Command sent to terminal: '{command}'.\n"
-            f"Terminal screen content:\n{screen_output[:1200]}"
+            "Arbitrary typing into terminal windows via legacy terminal_control is disabled for security. "
+            "Use the KIVO Stage 10 'run_readonly_command' tool with explicit user approval."
         )
 
-    elif action in ("execute_bg", "subprocess", "exec"):
-        if not command:
-            return "Please provide a 'command' to execute in background."
-        res = tc.run_in_subprocess(command=command, cwd=directory)
-        if res.success:
-            return f"Command succeeded:\n{res.output}"
-        return f"Command error:\n{res.error or res.output}"
+    elif action in ("run", "run_and_read", "execute_bg", "subprocess", "exec"):
+        return (
+            "Arbitrary shell execution via legacy terminal_control is disabled for security. "
+            "Use the KIVO Stage 10 'run_readonly_command' tool with explicit user approval."
+        )
 
     elif action in ("read", "read_output", "read_screen"):
         wait_sec = float(parameters.get("wait_seconds", 0.3))
@@ -112,22 +71,23 @@ def terminal_control(parameters: dict, response=None, session_memory=None, playe
         return "Focused terminal window." if ok else "Could not focus terminal (no terminal found)."
 
     elif action in ("open", "new", "launch"):
-        res = tc.open_terminal(directory=directory, command=command)
+        # Launch empty terminal optionally in a directory; never execute arbitrary commands on launch
+        res = tc.open_terminal(directory=directory)
         return f"Terminal open request: {res}"
 
     else:
         return (
             f"Unknown terminal action '{action}'. "
-            f"Valid actions: type, run, execute_bg, read_output, status, list, focus, open."
+            f"Valid actions: read_output, status, list, focus, open."
         )
 
 
 TOOL = {
     "name": "terminal_control",
     "description": (
-        "Full control over local terminal windows on Arch Linux. Use this whenever the user asks "
-        "to run terminal/shell/bash commands, type in the terminal, check what directory the terminal is in, "
-        "read terminal output or screen text, open a terminal, or focus a terminal window."
+        "Inspect and focus local terminal windows on Arch Linux. Use this to check active shell "
+        "working directory, read visible terminal screen output, list open terminals, or focus a terminal window. "
+        "Arbitrary shell execution is disabled; use 'run_readonly_command' for approved terminal inspection."
     ),
     "handler": terminal_control,
     "parameters": {
@@ -135,11 +95,7 @@ TOOL = {
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "type | run | execute_bg | read_output | status | list | focus | open"
-            },
-            "command": {
-                "type": "STRING",
-                "description": "The shell command to type or execute (e.g. 'git status', 'pip install send2trash', 'ls -la')"
+                "description": "read_output | status | list | focus | open"
             },
             "directory": {
                 "type": "STRING",

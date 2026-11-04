@@ -13,13 +13,13 @@ class TestTerminalControl(unittest.TestCase):
 
     def test_run_command_safe(self):
         res = self.adapter.run_in_subprocess("echo 'KIVO_TEST'")
-        self.assertTrue(res.success)
-        self.assertIn("KIVO_TEST", res.output)
+        self.assertFalse(res.success)
+        self.assertIn("disabled for security", res.error)
 
     def test_terminal_control_action_dispatch(self):
         from actions.terminal_control_action import terminal_control
         out = terminal_control({"action": "execute_bg", "command": "echo 'DISPATCH_OK'"})
-        self.assertIn("DISPATCH_OK", out)
+        self.assertIn("disabled for security", out)
 
         status_out = terminal_control({"action": "status"})
         self.assertIsInstance(status_out, str)
@@ -29,8 +29,8 @@ class TestTerminalControl(unittest.TestCase):
 
     def test_type_command_validation(self):
         from actions.terminal_control_action import terminal_control
-        out = terminal_control({"action": "type", "command": ""})
-        self.assertIn("Please provide a 'command'", out)
+        out = terminal_control({"action": "type", "command": "ls"})
+        self.assertIn("disabled for security", out)
 
         unknown = terminal_control({"action": "invalid_action_xyz"})
         self.assertIn("Unknown terminal action", unknown)

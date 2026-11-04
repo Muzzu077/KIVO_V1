@@ -179,16 +179,28 @@ _POLICY: dict[tuple[str, str], tuple[Risk, Control]] = {
     # ── orchestrate_task ──
     ("orchestrate_task", "*"):             (Risk.MEDIUM,   Control.LOG),
 
-    # ── terminal_control ──
-    ("terminal_control", "execute_bg"):    (Risk.HIGH,     Control.LOG),
-    ("terminal_control", "type"):          (Risk.HIGH,     Control.LOG),
-    ("terminal_control", "run"):           (Risk.HIGH,     Control.LOG),
+    # ── terminal_control (legacy execution blocked; use run_readonly_command) ──
+    ("terminal_control", "execute_bg"):    (Risk.CRITICAL, Control.DENY),
+    ("terminal_control", "subprocess"):    (Risk.CRITICAL, Control.DENY),
+    ("terminal_control", "exec"):          (Risk.CRITICAL, Control.DENY),
+    ("terminal_control", "type"):          (Risk.CRITICAL, Control.DENY),
+    ("terminal_control", "type_command"):  (Risk.CRITICAL, Control.DENY),
+    ("terminal_control", "run"):           (Risk.CRITICAL, Control.DENY),
+    ("terminal_control", "run_and_read"):  (Risk.CRITICAL, Control.DENY),
     ("terminal_control", "read_output"):   (Risk.SAFE,     Control.LOG),
+    ("terminal_control", "read"):          (Risk.SAFE,     Control.LOG),
+    ("terminal_control", "read_screen"):   (Risk.SAFE,     Control.LOG),
     ("terminal_control", "status"):        (Risk.SAFE,     Control.LOG),
+    ("terminal_control", "inspect"):       (Risk.SAFE,     Control.LOG),
     ("terminal_control", "list"):          (Risk.SAFE,     Control.LOG),
+    ("terminal_control", "list_terminals"): (Risk.SAFE,    Control.LOG),
     ("terminal_control", "focus"):         (Risk.SAFE,     Control.LOG),
+    ("terminal_control", "focus_terminal"): (Risk.SAFE,    Control.LOG),
     ("terminal_control", "open"):          (Risk.LOW,      Control.LOG),
-    ("terminal_control", "*"):             (Risk.MEDIUM,   Control.LOG),
+    ("terminal_control", "*"):             (Risk.CRITICAL, Control.DENY),
+
+    # ── run_readonly_command (Stage 10 controlled terminal access) ──
+    ("run_readonly_command", "*"):         (Risk.MEDIUM,   Control.CONFIRM),
 
     # ── voice_biometrics ──
     ("voice_biometrics", "disable"):       (Risk.HIGH,     Control.CONFIRM),

@@ -78,11 +78,14 @@ def _validate_pwd(args: list[str]) -> list[str]:
 
 
 def _validate_ls(args: list[str]) -> list[str]:
-    valid_flag_chars = set("lahstrR1FpdABCmxvUkgn")
+    # Disallow 'R' to prevent uncontrolled recursive directory scans (SEC-06)
+    valid_flag_chars = set("lahstr1FpdABCmxvUkgn")
     cleaned = []
     for a in args:
         if a.startswith("-") and not a.startswith("--"):
             flag_chars = a[1:]
+            if "R" in flag_chars:
+                raise CommandPolicyError("ls recursive flag '-R' is prohibited for security.")
             if not flag_chars or not set(flag_chars).issubset(valid_flag_chars):
                 raise CommandPolicyError(f"ls option '{a}' contains unpermitted flags.")
             cleaned.append(a)
@@ -150,8 +153,8 @@ def _validate_du(args: list[str]) -> list[str]:
             cleaned.append(a)
         elif a.startswith("--max-depth="):
             depth_val = a.split("=", 1)[1]
-            if not depth_val.isdigit() or int(depth_val) > 5:
-                raise CommandPolicyError("du --max-depth must be a positive integer <= 5.")
+            if not depth_val.isdigit() or int(depth_val) > 3:
+                raise CommandPolicyError("du --max-depth must be a positive integer <= 3.")
             cleaned.append(a)
         elif a in ("--human-readable", "--summarize", "--total"):
             cleaned.append(a)
@@ -220,7 +223,9 @@ def _validate_ps(args: list[str]) -> list[str]:
     for a in args:
         if a in valid_standalone:
             cleaned.append(a)
-        elif a.startswith("--sort=") or a.startswith("-o"):
+        elif a.startswith("--sort=") and re.match(r"^--sort=[+\-]?[%a-zA-Z0-9_,]+$", a):
+            cleaned.append(a)
+        elif a.startswith("-o") and re.match(r"^-o\s*[%a-zA-Z0-9_,]+$", a):
             cleaned.append(a)
         elif a.startswith("-") and all(c in "efAluxHw" for c in a[1:]):
             cleaned.append(a)

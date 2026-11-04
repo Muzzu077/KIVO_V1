@@ -331,14 +331,13 @@ class TerminalController:
         return False
 
     def open_terminal(self, directory: str | None = None, command: str | None = None) -> str:
-        """Launch a new terminal window, optionally in a directory or running a command."""
+        """Launch a new terminal window, optionally in a directory (command execution disallowed)."""
         try:
             from actions.open_app import open_app
             params = {"name": "terminal"}
             if directory:
                 params["target"] = directory
-            if command:
-                params["command"] = command
+            # Never execute arbitrary command on terminal launch
             return open_app(params)
         except Exception as e:
             return f"Failed to launch terminal: {e}"
@@ -352,90 +351,12 @@ class TerminalController:
         press_enter: bool = True,
         verify_idle: bool = True,
     ) -> CommandResult:
-        """
-        Type a command into an actual terminal window.
-
-        Safety checks:
-        1. Verifies the target is a terminal.
-        2. Focuses the terminal window.
-        3. Checks the shell is idle (at a prompt).
-        4. Types the command.
-        5. Optionally presses Enter.
-
-        Returns a CommandResult describing what happened.
-        """
-        start = time.monotonic()
-
-        # Resolve target terminal
-        if window is None:
-            focused = self._ctx.focused_window()
-            if focused and self._is_terminal(focused):
-                window = focused
-            else:
-                # Find the most recently used idle terminal
-                terms = self.list_terminals()
-                idle_terms = [t for t in terms if t.is_idle]
-                if not idle_terms:
-                    return CommandResult(
-                        success=False,
-                        error="No idle terminal found. Open a terminal first.",
-                        method="terminal_type",
-                        duration=time.monotonic() - start,
-                    )
-                window = idle_terms[0].window
-
-        state = self.get_terminal_state(window)
-        if not state:
-            return CommandResult(
-                success=False,
-                error=f"Window '{window.app_id}' is not a recognized terminal.",
-                method="terminal_type",
-                duration=time.monotonic() - start,
-            )
-
-        if verify_idle and not state.is_idle:
-            return CommandResult(
-                success=False,
-                error=(
-                    f"Terminal is busy running '{state.running_command}'. "
-                    f"Wait for it to finish or use a different terminal."
-                ),
-                method="terminal_type",
-                duration=time.monotonic() - start,
-            )
-
-        # Focus the terminal window
-        if not window.is_focused:
-            ok = self._ctx.focus_window(window.window_id)
-            if not ok:
-                return CommandResult(
-                    success=False,
-                    error="Could not focus the terminal window.",
-                    method="terminal_type",
-                    duration=time.monotonic() - start,
-                )
-            time.sleep(0.15)  # allow compositor to settle
-
-        # Type the command
-        ok = _type_text(command, self._ctx.session_type)
-        if not ok:
-            return CommandResult(
-                success=False,
-                error="Could not type text into the terminal (no input method available).",
-                method="terminal_type",
-                duration=time.monotonic() - start,
-            )
-
-        if press_enter:
-            time.sleep(0.05)
-            _press_key("Return", self._ctx.session_type)
-
+        """Disabled for security. Kept for signature compatibility."""
         return CommandResult(
-            success=True,
-            output=f"Typed '{command}' into {window.app_id} terminal.",
+            success=False,
+            error="Typing arbitrary commands into terminal windows via legacy terminal_control is disabled for security.",
             method="terminal_type",
-            cwd=state.cwd,
-            duration=time.monotonic() - start,
+            duration=0.0,
         )
 
     def run_in_subprocess(
@@ -444,78 +365,14 @@ class TerminalController:
         cwd: str | None = None,
         timeout: int = 30,
     ) -> CommandResult:
-        """
-        Run a command in KIVO's own restricted subprocess (not visible to user).
-        Use this for queries like "what directory are we in?" when a subprocess answer
-        is acceptable, or when the user doesn't need to see the command run.
-        """
-        start = time.monotonic()
-        work_dir = None
-        if cwd:
-            p = Path(cwd).expanduser().resolve()
-            if p.exists() and p.is_dir():
-                work_dir = str(p)
-
-        env = os.environ.copy()
-        venv_bin = Path(__file__).resolve().parent.parent / ".venv" / "bin"
-        if venv_bin.exists():
-            env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
-            env["VIRTUAL_ENV"] = str(venv_bin.parent)
-
-        try:
-            r = subprocess.run(
-                command,
-                shell=True,
-                cwd=work_dir,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            out = (r.stdout or "").strip()
-            err = (r.stderr or "").strip()
-            output = out
-            if err and r.returncode != 0:
-                output = f"{output}\nError: {err}".strip() if output else f"Error: {err}"
-
-            if r.returncode != 0:
-                try:
-                    from core.proactive_hub import get_proactive_hub, ProactiveEvent, ProactiveEventType
-                    get_proactive_hub().emit_event(
-                        ProactiveEvent(
-                            event_type=ProactiveEventType.TERMINAL_FAILURE,
-                            source="Terminal",
-                            title=f"Command '{command[:35]}' failed with code {r.returncode}",
-                            details=err[:200] or out[:200],
-                            suggested_action="Offer to analyze the error or provide the corrected syntax.",
-                        ),
-                        cooldown_seconds=60.0,
-                    )
-                except Exception:
-                    pass
-
-            return CommandResult(
-                success=r.returncode == 0,
-                output=output or "(no output)",
-                error=err if r.returncode != 0 else "",
-                method="subprocess",
-                cwd=work_dir or os.getcwd(),
-                duration=time.monotonic() - start,
-            )
-        except subprocess.TimeoutExpired:
-            return CommandResult(
-                success=False,
-                error=f"Command timed out after {timeout} seconds.",
-                method="subprocess",
-                duration=time.monotonic() - start,
-            )
-        except Exception as e:
-            return CommandResult(
-                success=False,
-                error=str(e),
-                method="subprocess",
-                duration=time.monotonic() - start,
-            )
+        """Disabled for security. Kept for signature compatibility."""
+        return CommandResult(
+            success=False,
+            output="",
+            error="Arbitrary shell execution via legacy run_in_subprocess is disabled for security. Use KIVO Stage 10 run_readonly_command with user approval.",
+            method="subprocess",
+            duration=0.0,
+        )
 
     def capture_terminal_output(
         self,

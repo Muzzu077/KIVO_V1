@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 import time
 from pathlib import Path
 
@@ -33,6 +34,41 @@ SAFE_ENV_VARS = (
     "TERM",
     "TZ",
 )
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process | None) -> None:
+    """Safely terminate the entire process group to ensure no children survive (SEC-03)."""
+    if proc is not None and proc.pid:
+        try:
+            # Kill process group on POSIX
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+async def _read_bounded_stream(
+    reader: asyncio.StreamReader | None,
+    max_bytes: int,
+) -> tuple[bytes, bool]:
+    """Read stream in bounded chunks without accumulating unlimited output in memory (SEC-02)."""
+    if reader is None:
+        return b"", False
+    buffer = bytearray()
+    truncated = False
+    while True:
+        chunk = await reader.read(1024)
+        if not chunk:
+            break
+        remaining = max_bytes - len(buffer)
+        if len(chunk) > remaining:
+            buffer.extend(chunk[:remaining])
+            truncated = True
+            break
+        buffer.extend(chunk)
+    return bytes(buffer), truncated
 
 
 def _get_sanitized_env() -> dict[str, str]:
@@ -106,7 +142,7 @@ class CommandExecutor:
         proc = None
 
         try:
-            # 4. Asynchronously launch subprocess (NEVER shell=True!)
+            # 4. Asynchronously launch subprocess with a new session for process group cleanup (SEC-03)
             proc = await asyncio.create_subprocess_exec(
                 exec_path,
                 *validated_args,
@@ -114,18 +150,43 @@ class CommandExecutor:
                 env=clean_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
 
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(),
+            # 5. Read stdout and stderr concurrently with strict bounded budget (SEC-02)
+            stdout_task = asyncio.create_task(_read_bounded_stream(proc.stdout, MAX_OUTPUT_BYTES))
+            stderr_task = asyncio.create_task(_read_bounded_stream(proc.stderr, MAX_OUTPUT_BYTES))
+
+            (stdout_res, stderr_res) = await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task),
                 timeout=self._timeout,
             )
+            stdout_bytes, out_truncated = stdout_res
+            stderr_bytes, err_truncated = stderr_res
+
+            # If either output stream hit the budget, terminate the process group
+            if out_truncated or err_truncated:
+                _kill_process_group(proc)
+
+            # Wait and reap the process
+            await proc.wait()
 
             execution_time = time.monotonic() - t0
             exit_code = proc.returncode if proc.returncode is not None else -1
 
-            stdout_text = stdout_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT_CHARS]
-            stderr_text = stderr_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT_CHARS]
+            TRUNC_NOTICE = "\n[Output limit exceeded — truncated]"
+            if out_truncated:
+                cut = max(0, MAX_OUTPUT_CHARS - len(TRUNC_NOTICE))
+                stdout_text = stdout_bytes.decode("utf-8", errors="replace")[:cut] + TRUNC_NOTICE
+            else:
+                stdout_text = stdout_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT_CHARS]
+
+            ERR_TRUNC_NOTICE = "\n[Error output limit exceeded — truncated]"
+            if err_truncated:
+                cut = max(0, MAX_OUTPUT_CHARS - len(ERR_TRUNC_NOTICE))
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace")[:cut] + ERR_TRUNC_NOTICE
+            else:
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT_CHARS]
 
             return CommandExecutionResult(
                 command=cmd,
@@ -140,8 +201,8 @@ class CommandExecutor:
 
         except asyncio.TimeoutError:
             if proc:
+                _kill_process_group(proc)
                 try:
-                    proc.kill()
                     await proc.wait()
                 except Exception:
                     pass
@@ -158,10 +219,19 @@ class CommandExecutor:
                 error_message=f"Command '{cmd}' execution timed out after {self._timeout}s.",
             )
 
+        except asyncio.CancelledError:
+            if proc:
+                _kill_process_group(proc)
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
+            raise
+
         except Exception as exc:
             if proc:
+                _kill_process_group(proc)
                 try:
-                    proc.kill()
                     await proc.wait()
                 except Exception:
                     pass
