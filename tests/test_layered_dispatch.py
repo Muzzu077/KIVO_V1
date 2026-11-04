@@ -1,4 +1,4 @@
-"""Talk vs Agent dispatch: the two cases where routing is enforcement."""
+"""Talk vs Agent dispatch: routing policy and layered memory."""
 import os
 import tempfile
 import unittest
@@ -6,61 +6,67 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.brain import get_brain
-from main import JarvisLive
-from memory.memory_manager import LayeredMemoryStore, format_layered_memory_for_prompt
+from memory.memory_manager import (
+    LayeredMemoryStore,
+    format_layered_memory_for_prompt,
+    workspace_scope,
+)
 
 
-def _live(text: str) -> JarvisLive:
-    live = JarvisLive.__new__(JarvisLive)
-    live._last_user_text = text
-    live._brain = get_brain()
-    live._workspace_scope = "Mark-LV@test"
-    live._active_agent_scope = ""
-    live._active_task_scope = ""
-    return live
+class TestAutomationBlocking(unittest.TestCase):
+    """CANCEL and DICTATION must never reach a desktop automation tool."""
 
+    def setUp(self):
+        self.router = get_brain().router
 
-class TestToolBlocking(unittest.TestCase):
-    def test_cancel_blocks_every_tool(self):
-        live = _live("stop")
-        for tool in ("computer_control", "web_search", "save_memory", "orchestrate_task"):
-            with self.subTest(tool=tool):
-                self.assertIn("asked to stop", live._tool_block_reason(tool))
+    def _allows(self, text: str) -> bool:
+        return self.router.allows_automation(self.router.classify(text))
+
+    def test_cancel_blocks_automation(self):
+        for text in ("stop", "cancel everything", "never mind"):
+            with self.subTest(text=text):
+                decision = self.router.classify(text)
+                self.assertEqual(decision.intent.value, "cancel")
+                self.assertFalse(self.router.allows_automation(decision))
 
     def test_dictation_blocks_desktop_automation(self):
-        live = _live("dictate this into the email field")
-        self.assertIn("dictation", live._tool_block_reason("computer_control"))
-        self.assertIn("dictation", live._tool_block_reason("browser_control"))
-        self.assertIn("dictation", live._tool_block_reason("orchestrate_task"))
-        # Memory and vision are not desktop automation.
-        self.assertEqual(live._tool_block_reason("save_memory"), "")
-        self.assertEqual(live._tool_block_reason("screen_process"), "")
+        decision = self.router.classify("dictate this into the email field")
+        self.assertEqual(decision.intent.value, "dictation")
+        self.assertFalse(self.router.allows_automation(decision))
 
     def test_ordinary_request_is_not_blocked(self):
-        live = _live("what is the weather in Istanbul?")
-        self.assertEqual(live._tool_block_reason("computer_control"), "")
+        self.assertTrue(self._allows("what is the weather in Istanbul?"))
 
     def test_no_transcript_means_no_block(self):
-        live = _live("")
-        self.assertEqual(live._tool_block_reason("computer_control"), "")
+        self.assertTrue(self._allows(""))
 
 
 class TestMemoryScopeSelection(unittest.TestCase):
-    def test_workspace_layer_uses_current_repo(self):
-        live = _live("")
-        live._workspace_scope = "Mark-LV@test"
-        self.assertEqual(live._scope_for_layer("workspace"), "Mark-LV@test")
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.store = LayeredMemoryStore(
+            path=base / "layers.json", backup_path=base / "layers.json.bak")
 
-    def test_task_layer_uses_active_agent_workspace(self):
-        live = _live("")
-        live._active_agent_scope = "fix-parser-1"
-        self.assertEqual(live._scope_for_layer("task"), "fix-parser-1")
-        self.assertEqual(live._scope_for_layer("agent"), "fix-parser-1")
+    def tearDown(self):
+        self.tmp.cleanup()
 
-    def test_task_layer_without_workspace_stays_out_of_personal(self):
-        live = _live("")
-        self.assertEqual(live._scope_for_layer("task"), "session")
-        self.assertEqual(live._scope_for_layer("personal"), "")
+    def test_workspace_scope_uses_current_repo(self):
+        self.assertEqual(workspace_scope(), workspace_scope(os.getcwd()))
+        self.assertIn("@", workspace_scope())
+
+    def test_task_scope_is_isolated_from_other_tasks(self):
+        self.store.remember("task", "finding", "one test fails", scope="job-1")
+        self.assertEqual(len(self.store.recall("task", "job-1")), 1)
+        self.assertEqual(self.store.recall("task", "job-2"), [])
+
+    def test_task_scope_does_not_fall_into_personal_memory(self):
+        self.store.remember("task", "goal", "finish the job", scope="session")
+        rows = self.store.recall("task", "session")
+        self.assertEqual(rows[0]["value"], "finish the job")
+        # The layered store has no "personal" layer; task work can never
+        # silently land in the personal memory bucket.
+        self.assertEqual(self.store.recall("personal", "session"), [])
 
 
 class TestLayeredPrompt(unittest.TestCase):

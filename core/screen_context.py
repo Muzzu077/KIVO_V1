@@ -106,6 +106,27 @@ class ScreenContextStore:
         self._lock = threading.Lock()
         self._frames: list[ContextFrame] = []
         self._max_frames = max(1, max_frames)
+        self._listeners: list = []
+
+    def add_listener(self, callback) -> None:
+        """Observe new observations for a UI/IPC layer. No data is copied."""
+        with self._lock:
+            if callback not in self._listeners:
+                self._listeners.append(callback)
+
+    def remove_listener(self, callback) -> None:
+        with self._lock:
+            if callback in self._listeners:
+                self._listeners.remove(callback)
+
+    def _notify(self, frame: Optional["ContextFrame"]) -> None:
+        with self._lock:
+            listeners = list(self._listeners)
+        for callback in listeners:
+            try:
+                callback(frame)
+            except Exception:
+                pass
 
     # ── Writing ────────────────────────────────────────────────────────────
 
@@ -128,12 +149,14 @@ class ScreenContextStore:
             self._frames.append(frame)
             if len(self._frames) > self._max_frames:
                 del self._frames[: len(self._frames) - self._max_frames]
+        self._notify(frame)
         return frame
 
     def clear(self) -> None:
         """Drop every frame. Used when monitoring is paused or disabled."""
         with self._lock:
             self._frames.clear()
+        self._notify(None)
 
     # ── Reading ────────────────────────────────────────────────────────────
 

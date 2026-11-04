@@ -67,11 +67,14 @@ class TaskOrchestrator:
     _instance: Optional[TaskOrchestrator] = None
     _lock = threading.Lock()
 
+    MAX_TASK_HISTORY = 50
+
     def __init__(self):
         self._action_registry = None
         self._active_tasks: dict[str, TaskPlan] = {}
         self._task_history: list[TaskPlan] = []
         self._progress_callback: Optional[Callable[[str, int, int, str], None]] = None
+        self._listeners: list[Callable[[dict], None]] = []
 
     @classmethod
     def get_instance(cls) -> TaskOrchestrator:
@@ -87,6 +90,95 @@ class TaskOrchestrator:
     def set_progress_callback(self, cb: Callable[[str, int, int, str], None]) -> None:
         """cb(task_id, current_step, total_steps, message)"""
         self._progress_callback = cb
+
+    def add_listener(self, callback: Callable[[dict], None]) -> None:
+        """Observe task lifecycle snapshots for the UI/IPC layer."""
+        with self._lock:
+            if callback not in self._listeners:
+                self._listeners.append(callback)
+
+    def remove_listener(self, callback: Callable[[dict], None]) -> None:
+        with self._lock:
+            if callback in self._listeners:
+                self._listeners.remove(callback)
+
+    def _notify_task(self, plan: TaskPlan, reason: str) -> None:
+        with self._lock:
+            listeners = list(self._listeners)
+        if not listeners:
+            return
+        event = {"reason": reason, "task": self._plan_snapshot(plan)}
+        for callback in listeners:
+            try:
+                callback(event)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _plan_snapshot(plan: TaskPlan) -> dict:
+        """A UI-safe view: no tool parameters, results or error text."""
+        if plan.cancel_event.is_set() and plan.is_finished:
+            status = "cancelled"
+        elif plan.is_finished:
+            status = "completed" if plan.success else "failed"
+        elif plan.current_step_index:
+            status = "running"
+        else:
+            status = "pending"
+
+        # plan.summary may contain raw tool output or exception text. Replace
+        # it with a generic, step-numbered failure message for failed plans.
+        summary = plan.summary
+        if (plan.is_finished and not plan.success
+                and not plan.cancel_event.is_set()):
+            failed_step = next(
+                (step for step in plan.steps
+                 if step.status is StepStatus.FAILED),
+                None,
+            )
+            if failed_step is not None:
+                summary = f"Task failed at step {failed_step.id}."
+
+        return {
+            "task_id": plan.task_id,
+            "goal": plan.goal,
+            "workspace_id": plan.workspace_id,
+            "created_at": plan.created_at,
+            "current_step": plan.current_step_index,
+            "total_steps": len(plan.steps),
+            "status": status,
+            "success": plan.success,
+            "summary": summary,
+            "steps": [
+                {
+                    "id": step.id,
+                    "description": step.description,
+                    "status": step.status.name.lower(),
+                    "is_critical": step.is_critical,
+                }
+                for step in plan.steps
+            ],
+        }
+
+    def has_active_tasks(self) -> bool:
+        with self._lock:
+            return any(not plan.is_finished for plan in self._active_tasks.values())
+
+    def get_current_task(self) -> Optional[TaskPlan]:
+        """The newest unfinished plan, or None."""
+        with self._lock:
+            active = [p for p in self._active_tasks.values() if not p.is_finished]
+        if not active:
+            return None
+        return max(active, key=lambda plan: plan.created_at)
+
+    def public_task_snapshot(self, plan: TaskPlan) -> dict:
+        return self._plan_snapshot(plan)
+
+    def task_history_snapshot(self, limit: int = 20) -> list[dict]:
+        with self._lock:
+            history = list(reversed(self._task_history))[: max(1, limit)]
+        return [self._plan_snapshot(plan) for plan in history]
 
     def create_plan(self, goal: str, steps_data: list[dict],
                     workspace_id: str = "") -> TaskPlan:
@@ -115,7 +207,18 @@ class TaskOrchestrator:
                         workspace_id=workspace_id)
         with self._lock:
             self._active_tasks[task_id] = plan
+        self._notify_task(plan, "created")
         return plan
+
+    def _finalize_plan(self, plan: TaskPlan) -> None:
+        """Record a finished plan once and tell listeners it is over."""
+        with self._lock:
+            if any(existing is plan for existing in self._task_history):
+                return
+            self._task_history.append(plan)
+            if len(self._task_history) > self.MAX_TASK_HISTORY:
+                del self._task_history[:-self.MAX_TASK_HISTORY]
+        self._notify_task(plan, "finished")
 
     def execute_plan(self, plan: TaskPlan, context: dict | None = None) -> TaskPlan:
         """
@@ -126,6 +229,7 @@ class TaskOrchestrator:
             plan.summary = "Orchestrator has no action registry bound."
             plan.is_finished = True
             plan.success = False
+            self._finalize_plan(plan)
             return plan
 
         # Tell the Drive session that sustained work is happening. The UI can
@@ -143,6 +247,7 @@ class TaskOrchestrator:
             return self._run_steps(plan, context, total, completed_count,
                                    executed_steps_for_rollback, drive)
         finally:
+            self._finalize_plan(plan)
             drive.stop("finished" if plan.success else (plan.summary or "ended"))
 
     def _run_steps(self, plan, context, total, completed_count,
@@ -168,6 +273,7 @@ class TaskOrchestrator:
                     self._progress_callback(plan.task_id, idx + 1, total, step.description)
                 except Exception:
                     pass
+            self._notify_task(plan, "progress")
 
             # Safety Policy Gate Check
             risk, control, denial = policy_check(step.tool, step.action, step.parameters)
@@ -235,8 +341,16 @@ class TaskOrchestrator:
                       if not p.is_finished]
         if not active:
             return "No active tasks to cancel."
+        never_started = []
         for plan in active:
             plan.cancel_event.set()
+            if plan.current_step_index == 0 and not plan.is_finished:
+                plan.is_finished = True
+                plan.success = False
+                plan.summary = "Task cancelled before execution."
+                never_started.append(plan)
+        for plan in never_started:
+            self._finalize_plan(plan)
         from core.drive import get_drive_session
         get_drive_session().stop("cancelled by user")
         names = ", ".join(p.goal[:40] for p in active)

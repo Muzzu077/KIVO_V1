@@ -1,0 +1,231 @@
+"""Versioned JSON protocol for the KIVO Unix-domain socket.
+
+Framing
+    One JSON object per UTF-8 line, terminated by ``\\n``.  A message's JSON
+    text may not exceed ``MAX_MESSAGE_BYTES``.
+
+Client request
+    {"version": 1, "type": "request", "id": "req-1",
+     "operation": "get_status", "params": {}}
+
+Server response
+    {"version": 1, "type": "response", "id": "req-1", "ok": true,
+     "result": {...}}
+
+Server event
+    {"version": 1, "type": "event", "event": "drive_progress",
+     "sequence": 7, "data": {...}}
+
+Errors are responses with ``ok`` false and an ``error`` object containing
+``code`` and ``message``.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any
+
+PROTOCOL_VERSION = 1
+
+# A full line, excluding the trailing newline, must not exceed this.
+MAX_MESSAGE_BYTES = 64 * 1024
+MAX_REQUEST_ID_LENGTH = 128
+MAX_PARAM_EVENTS = 32
+
+REQUEST_OPERATIONS = frozenset({
+    "get_status",
+    "get_current_task",
+    "get_dashboard_data",
+    "subscribe_events",
+    "unsubscribe_events",
+    "cancel_active_task",
+})
+
+EVENT_NAMES = (
+    "assistant_state_changed",
+    "audio_state_changed",
+    "user_transcript",
+    "assistant_response",
+    "drive_started",
+    "drive_progress",
+    "drive_completed",
+    "drive_failed",
+    "drive_cancelled",
+    "confirmation_required",
+    "screen_context_updated",
+    "task_history_updated",
+    "agent_state_changed",
+    "error",
+)
+EVENT_NAME_SET = frozenset(EVENT_NAMES)
+
+
+class ProtocolError(Exception):
+    """A request that must be rejected by the server."""
+
+    def __init__(self, code: str, message: str, *, close: bool = False,
+                 request_id: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.close = close
+        self.request_id = request_id
+
+
+@dataclass(frozen=True)
+class Request:
+    request_id: str
+    operation: str
+    params: dict[str, Any]
+
+
+def decode_request(body: bytes) -> Request:
+    """Parse and validate one request body (without the newline)."""
+    if len(body) > MAX_MESSAGE_BYTES:
+        raise ProtocolError(
+            "message_too_large",
+            f"message exceeds {MAX_MESSAGE_BYTES} bytes",
+            close=True,
+        )
+
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ProtocolError("invalid_json", "message is not valid UTF-8")
+    if not text.strip():
+        raise ProtocolError("invalid_json", "empty message")
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProtocolError("invalid_json", f"malformed JSON: {exc.msg}")
+
+    if not isinstance(payload, dict):
+        raise ProtocolError("invalid_request", "message must be a JSON object")
+
+    unknown_keys = set(payload) - {"version", "type", "id", "operation", "params"}
+    if unknown_keys:
+        raise ProtocolError(
+            "invalid_request",
+            "unknown top-level field(s): " + ", ".join(sorted(unknown_keys)),
+        )
+
+    version = payload.get("version")
+    if (not isinstance(version, int) or isinstance(version, bool)
+            or version != PROTOCOL_VERSION):
+        raise ProtocolError(
+            "unsupported_version",
+            f"protocol version must be {PROTOCOL_VERSION}",
+        )
+
+    if payload.get("type") != "request":
+        raise ProtocolError("invalid_type", "type must be 'request'")
+
+    request_id = payload.get("id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ProtocolError("invalid_request", "id must be a non-empty string")
+    if len(request_id) > MAX_REQUEST_ID_LENGTH:
+        raise ProtocolError("invalid_request", "id is too long")
+    if "\x00" in request_id:
+        raise ProtocolError("invalid_request", "id contains a null byte")
+
+    operation = payload.get("operation")
+    if not isinstance(operation, str) or not operation:
+        raise ProtocolError(
+            "invalid_request", "operation must be a non-empty string",
+            request_id=request_id,
+        )
+    if operation not in REQUEST_OPERATIONS:
+        raise ProtocolError(
+            "unsupported_operation",
+            f"operation '{operation}' is not supported",
+            request_id=request_id,
+        )
+
+    params = payload.get("params", {})
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        raise ProtocolError(
+            "invalid_params", "params must be a JSON object",
+            request_id=request_id,
+        )
+
+    if operation == "subscribe_events":
+        try:
+            _validate_subscription_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif params:
+        raise ProtocolError(
+            "invalid_params",
+            f"operation '{operation}' does not accept parameters",
+            request_id=request_id,
+        )
+
+    return Request(request_id=request_id, operation=operation, params=params)
+
+
+def _validate_subscription_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"events"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown subscription parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "events" not in params:
+        return
+    events = params["events"]
+    if not isinstance(events, list) or not events:
+        raise ProtocolError("invalid_params", "events must be a non-empty list")
+    if len(events) > MAX_PARAM_EVENTS:
+        raise ProtocolError("invalid_params", "too many event filters")
+    seen: set[str] = set()
+    for name in events:
+        if not isinstance(name, str) or name not in EVENT_NAME_SET:
+            raise ProtocolError(
+                "invalid_params",
+                f"unknown event name: {name!r}",
+            )
+        if name in seen:
+            raise ProtocolError("invalid_params", "duplicate event name")
+        seen.add(name)
+
+
+def encode_message(payload: dict[str, Any]) -> bytes:
+    """Serialize one protocol message as a newline-terminated UTF-8 line."""
+    return (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def response(request_id: str | None, result: dict[str, Any]) -> bytes:
+    return encode_message({
+        "version": PROTOCOL_VERSION,
+        "type": "response",
+        "id": request_id,
+        "ok": True,
+        "result": result,
+    })
+
+
+def error_response(request_id: str | None, code: str, message: str) -> bytes:
+    return encode_message({
+        "version": PROTOCOL_VERSION,
+        "type": "response",
+        "id": request_id,
+        "ok": False,
+        "error": {"code": code, "message": message},
+    })
+
+
+def event_message(event: str, data: dict[str, Any], sequence: int) -> bytes:
+    if event not in EVENT_NAME_SET:
+        raise ValueError(f"unknown event: {event}")
+    return encode_message({
+        "version": PROTOCOL_VERSION,
+        "type": "event",
+        "event": event,
+        "sequence": sequence,
+        "data": data,
+    })

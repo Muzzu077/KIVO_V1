@@ -1,4 +1,4 @@
 """KIVO core modules."""
-from kivo.core.state import KivoStateType, KivoState
+from kivo.core.state import KivoStateType
 
-__all__ = ["KivoStateType", "KivoState"]
+__all__ = ["KivoStateType"]
