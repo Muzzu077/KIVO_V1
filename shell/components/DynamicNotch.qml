@@ -44,6 +44,46 @@ Item {
 
     property alias inputRegion: capsule
 
+    // ── Push-to-Talk audio state ───────────────────────────────────────────
+    property bool pttPressed: false
+    property real pttElapsed: 0.0
+    property string lastCaptureDuration: ""
+    property string lastCaptureTime: ""
+
+    Timer {
+        id: pttElapsedTimer
+        interval: 100
+        repeat: true
+        running: notch.audioState === "capturing"
+        onTriggered: {
+            notch.pttElapsed += 0.1
+        }
+    }
+
+    function startPushToTalk() {
+        if (!connected)
+            return
+        pttPressed = true
+        pttElapsed = 0.0
+        if (ipc)
+            ipc.audioStartCapture()
+    }
+
+    function stopPushToTalk() {
+        if (!pttPressed && audioState !== "capturing")
+            return
+        pttPressed = false
+        if (ipc)
+            ipc.audioStopCapture()
+    }
+
+    function cancelPushToTalk() {
+        pttPressed = false
+        pttElapsed = 0.0
+        if (ipc)
+            ipc.audioCancelCapture()
+    }
+
     // ── Authoritative shortcuts ────────────────────────────────────────────
     readonly property bool connected: !!(ipc && ipc.connected)
     readonly property bool stale: ipc ? ipc.stale : true
@@ -105,7 +145,7 @@ Item {
 
     readonly property color stateAccent: {
         switch (visualState) {
-        case "listening": return Theme.mint
+        case "listening": return notch.audioState === "capturing" ? Theme.danger : Theme.mint
         case "thinking": return Theme.accentSoft
         case "speaking": return Theme.mint
         case "driving": return Theme.accent
@@ -125,7 +165,7 @@ Item {
 
     readonly property string stateLabel: {
         switch (visualState) {
-        case "listening": return "Listening"
+        case "listening": return notch.audioState === "capturing" ? "Recording" : "Listening"
         case "thinking": return "Thinking"
         case "speaking": return "Speaking"
         case "driving": return "Driving"
@@ -153,7 +193,7 @@ Item {
 
     readonly property string collapsedLabel: {
         switch (visualState) {
-        case "listening": return "Listening"
+        case "listening": return notch.audioState === "capturing" ? "Recording…" : "Listening"
         case "thinking": return "Thinking"
         case "speaking": return "Speaking"
         case "driving": return taskTitle.length > 0 ? taskTitle : "Working"
@@ -609,6 +649,21 @@ Item {
         function onBackendError(message) {
             if (notch.connected)
                 notch.showTransient("error", "Backend error", message, 4200, false)
+        }
+
+        function onAudioCaptureCompleted(metadata) {
+            var dur = metadata && metadata.duration ? metadata.duration : 0
+            notch.lastCaptureDuration = Number(dur).toFixed(1)
+            notch.lastCaptureTime = "just now"
+            notch.showTransient("success", "Audio Captured",
+                                notch.lastCaptureDuration + "s microphone audio received",
+                                2500, false)
+        }
+
+        function onAudioCaptureError(error) {
+            notch.showTransient("error", "Capture Error",
+                                error || "Microphone capture failed",
+                                3500, false)
         }
     }
 
@@ -1122,6 +1177,144 @@ Item {
                         wrapMode: Text.WordWrap
                         maximumLineCount: 2
                         elide: Text.ElideRight
+                    }
+                }
+
+                // ── Push-to-Talk audio capture control ────────────────────────────────
+                Rectangle {
+                    width: parent.width
+                    height: 44
+                    visible: notch.visualState !== "driving" && notch.visualState !== "stopping" && notch.visualState !== "offline"
+                    radius: 12
+                    color: notch.audioState === "capturing"
+                        ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.12)
+                        : Theme.surfaceSunken
+                    border.width: 1
+                    border.color: notch.audioState === "capturing" ? Theme.danger : Theme.divider
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 10
+                        spacing: 8
+
+                        Rectangle {
+                            id: pttButton
+                            Layout.preferredWidth: pttBtnLabel.implicitWidth + 24
+                            Layout.preferredHeight: 28
+                            radius: 8
+                            color: {
+                                if (!notch.connected)
+                                    return Theme.surfaceSunken
+                                if (notch.audioState === "capturing")
+                                    return Theme.danger
+                                return pttMouseArea.pressed
+                                    ? Theme.accent
+                                    : (pttMouseArea.containsMouse ? Theme.surfaceHover : Theme.surfaceRaised)
+                            }
+                            border.width: 1
+                            border.color: notch.audioState === "capturing" ? Theme.danger : Theme.border
+
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 5
+
+                                Rectangle {
+                                    width: 6
+                                    height: 6
+                                    radius: 3
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: notch.audioState === "capturing" ? "#FFFFFF" : Theme.mint
+
+                                    SequentialAnimation on opacity {
+                                        running: notch.audioState === "capturing"
+                                        loops: Animation.Infinite
+                                        NumberAnimation { from: 1.0; to: 0.2; duration: 350 }
+                                        NumberAnimation { from: 0.2; to: 1.0; duration: 350 }
+                                    }
+                                }
+
+                                Text {
+                                    id: pttBtnLabel
+                                    text: notch.audioState === "capturing" ? "Release to Send" : "Hold to Speak"
+                                    color: notch.audioState === "capturing" ? "#FFFFFF" : Theme.textPrimary
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 10
+                                    font.weight: Font.Medium
+                                }
+                            }
+
+                            MouseArea {
+                                id: pttMouseArea
+                                anchors.fill: parent
+                                enabled: notch.connected
+                                hoverEnabled: true
+                                onPressed: notch.startPushToTalk()
+                                onReleased: notch.stopPushToTalk()
+                                onCanceled: notch.cancelPushToTalk()
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 1
+
+                            Text {
+                                text: {
+                                    if (notch.audioState === "capturing")
+                                        return "Recording (" + notch.pttElapsed.toFixed(1) + "s)"
+                                    if (notch.lastCaptureDuration.length > 0)
+                                        return "Captured " + notch.lastCaptureDuration + "s audio"
+                                    if (notch.audioState === "unavailable")
+                                        return "No microphone available"
+                                    return "Push-to-Talk"
+                                }
+                                color: notch.audioState === "capturing" ? Theme.danger : Theme.textPrimary
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 9
+                                font.weight: Font.Medium
+                            }
+
+                            Text {
+                                text: {
+                                    if (notch.audioState === "capturing")
+                                        return "Audio stream active"
+                                    if (notch.ipc && notch.ipc.audioDeviceName.length > 0)
+                                        return notch.ipc.audioDeviceName
+                                    return "Press and hold button to record"
+                                }
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 8
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.preferredWidth: 46
+                            Layout.preferredHeight: 24
+                            visible: notch.audioState === "capturing"
+                            radius: 6
+                            color: pttCancelMouse.containsMouse ? Theme.surfaceHover : Theme.surfaceSunken
+                            border.width: 1
+                            border.color: Theme.border
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Cancel"
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 8
+                            }
+
+                            MouseArea {
+                                id: pttCancelMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: notch.cancelPushToTalk()
+                            }
+                        }
                     }
                 }
 

@@ -103,6 +103,34 @@ Item {
                 }
                 Item { width: 200; height: 4 }
                 Item {
+                    id: navAudio
+                    width: 200
+                    height: 44
+                    property string page: "audio"
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 12
+                        color: dash.currentPage === navAudio.page ? Theme.accentDim : (navAudioMouse.containsMouse ? Theme.surfaceHover : Theme.surfaceSunken)
+                        border.width: 1
+                        border.color: dash.currentPage === navAudio.page ? Theme.accentDim : Theme.divider
+                    }
+                    MouseArea {
+                        id: navAudioMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onClicked: dash.selectPage(navAudio.page)
+                    }
+                    Text {
+                        x: 14
+                        y: 12
+                        text: "Audio"
+                        font.pixelSize: Theme.fontBody
+                        font.bold: dash.currentPage === navAudio.page
+                        color: dash.currentPage === navAudio.page ? Theme.textPrimary : Theme.textSecondary
+                    }
+                }
+                Item { width: 200; height: 4 }
+                Item {
                     id: navActivity
                     width: 200
                     height: 44
@@ -229,6 +257,12 @@ Item {
                 anchors.fill: parent
                 ipc: dash.ipc
                 visible: dash.currentPage === "overview"
+            }
+            DashboardAudio {
+                id: audioPage
+                anchors.fill: parent
+                ipc: dash.ipc
+                visible: dash.currentPage === "audio"
             }
             DashboardActivity {
                 id: activityPage

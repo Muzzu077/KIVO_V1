@@ -110,6 +110,14 @@ Scope {
         && (taskStatus === "pending" || taskStatus === "running")
         && !cancelling
 
+    // ── Audio properties ───────────────────────────────────────────────────
+    property var audioData: null
+    property bool audioCapturing: audioState === "capturing"
+    property real audioCaptureDuration: 0.0
+    property string audioDeviceName: ""
+    property var lastAudioCapture: null
+    property string lastAudioError: ""
+
     // ── Signals ────────────────────────────────────────────────────────────
     signal statusUpdated()
     signal taskUpdated()
@@ -121,6 +129,11 @@ Scope {
     signal backendError(string message)
     signal protocolWarning(string message)
     signal transcriptChanged()
+    signal audioCaptureStarted(string deviceName)
+    signal audioCaptureStopped()
+    signal audioCaptureCompleted(var metadata)
+    signal audioCaptureError(string error)
+    signal audioDevicesUpdated(var devices)
 
     // ── Internal state ─────────────────────────────────────────────────────
     property bool _wantConnected: false
@@ -471,10 +484,85 @@ Scope {
             } else {
                 taskHistory = []
             }
+            if (_isObject(payload) && _isObject(payload.audio)) {
+                audioData = payload.audio
+                if (payload.audio.device)
+                    audioDeviceName = _text(payload.audio.device, "name", "")
+                if (payload.audio.last_capture)
+                    lastAudioCapture = payload.audio.last_capture
+            }
             if (typeof callback === "function")
                 callback(null, payload)
         })
         return result
+    }
+
+    // ── Audio control ──────────────────────────────────────────────────────
+    function audioGetStatus(callback) {
+        return request("audio_get_status", null, function(error, result) {
+            if (!error && _isObject(result)) {
+                audioData = result
+                if (result.device)
+                    audioDeviceName = _text(result.device, "name", "")
+                if (result.last_capture)
+                    lastAudioCapture = result.last_capture
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function audioListDevices(callback) {
+        return request("audio_list_devices", null, function(error, result) {
+            if (!error && _isObject(result)) {
+                if (Array.isArray(result.devices))
+                    audioDevicesUpdated(result.devices)
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function audioSelectDevice(deviceName, callback) {
+        return request("audio_select_device", { "device": String(deviceName) }, function(error, result) {
+            if (!error && _isObject(result) && result.ok) {
+                if (result.device)
+                    audioDeviceName = _text(result.device, "name", "")
+                audioGetStatus()
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function audioStartCapture(callback) {
+        if (!connected) {
+            if (typeof callback === "function")
+                callback({ error: { message: "Backend offline" } }, null)
+            return ""
+        }
+        return request("audio_start_capture", null, function(error, result) {
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function audioStopCapture(callback) {
+        if (!connected) {
+            if (typeof callback === "function")
+                callback({ error: { message: "Backend offline" } }, null)
+            return ""
+        }
+        return request("audio_stop_capture", null, function(error, result) {
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function audioCancelCapture(callback) {
+        if (!connected)
+            return ""
+        return request("audio_cancel_capture", null, callback)
     }
 
     // ── Incoming messages ──────────────────────────────────────────────────
@@ -619,6 +707,31 @@ Scope {
             break
         case "assistant_response":
             _applyTranscript(data, true)
+            break
+        case "audio_capture_started":
+            audioCapturing = true
+            audioCaptureDuration = 0.0
+            if (data.device_name)
+                audioDeviceName = String(data.device_name)
+            audioCaptureStarted(audioDeviceName)
+            break
+        case "audio_capture_stopped":
+            audioCapturing = false
+            audioCaptureStopped()
+            break
+        case "audio_capture_completed":
+            audioCapturing = false
+            lastAudioCapture = _copy(data)
+            audioCaptureCompleted(lastAudioCapture)
+            break
+        case "audio_capture_error":
+            audioCapturing = false
+            lastAudioError = _text(data, "error", "Audio capture failed")
+            audioCaptureError(lastAudioError)
+            break
+        case "audio_device_changed":
+            if (data.name)
+                audioDeviceName = String(data.name)
             break
         case "confirmation_required":
             // The backend confirmation gate is intentionally unbound.  Do not

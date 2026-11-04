@@ -346,7 +346,8 @@ class IPCServer:
             }))
             return
 
-        handler = getattr(self._handlers, operation, None)
+        op_name = operation.replace(".", "_")
+        handler = getattr(self._handlers, op_name, None)
         if handler is None or not callable(handler):
             client.send(error_response(
                 request.request_id,
@@ -356,7 +357,13 @@ class IPCServer:
             return
 
         try:
-            result = handler()
+            if request.params:
+                try:
+                    result = handler(request.params)
+                except TypeError:
+                    result = handler()
+            else:
+                result = handler()
         except Exception as exc:  # noqa: BLE001 - never leak tracebacks to clients
             self._logger(f"[IPC] handler {operation} failed: {exc}")
             client.send(error_response(

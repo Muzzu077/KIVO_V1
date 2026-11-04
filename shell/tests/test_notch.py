@@ -1114,6 +1114,32 @@ class NotchIntegrationTest(unittest.TestCase):
         shell.call("closeDashboard")
         shell.wait_snapshot(lambda item: not item["dashboardOpen"], timeout=12)
 
+    def test_audio_capture_control_and_recording_state(self) -> None:
+        backend = self.start_backend()
+        shell = self.start_shell(backend)
+        shell.wait_state("idle")
+
+        snap = shell.snapshot()
+        self.assertFalse(snap.get("audioCapturing", False))
+
+        # Backend simulates PTT capture start
+        backend.publish(
+            "audio_state_changed",
+            {"state": "capturing", "previous": "idle", "detail": "recording"},
+        )
+        shell.wait_snapshot(lambda item: item.get("audioCapturing") is True, timeout=8)
+
+        # Backend simulates capture complete
+        backend.publish(
+            "audio_capture_completed",
+            {"capture_id": "c-123", "duration": 1.5, "samplerate": 16000},
+        )
+        backend.publish(
+            "audio_state_changed",
+            {"state": "idle", "previous": "capturing", "detail": "ready"},
+        )
+        shell.wait_snapshot(lambda item: item.get("audioCapturing") is False, timeout=8)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

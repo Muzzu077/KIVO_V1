@@ -88,7 +88,8 @@ class KivoApp:
             print("  [8/9] Initializing confirmation service...")
             self._init_confirmation()
 
-            print("  [9/9] Starting local IPC server...")
+            print("  [9/9] Initializing audio subsystem and IPC server...")
+            self._init_audio()
             self._init_ipc()
 
             self._initialized = True
@@ -165,6 +166,21 @@ class KivoApp:
         self._components["confirm_gate"] = confirm
         print("  note: no confirmation UI bound; irreversible actions are refused")
 
+    def _init_audio(self) -> None:
+        from kivo.audio import AudioCaptureManager, AudioDeviceManager, AudioIngress
+
+        device_manager = AudioDeviceManager()
+        ingress = AudioIngress()
+        capture_manager = AudioCaptureManager(
+            device_manager,
+            on_state_change=self._on_audio_state_change,
+            on_complete=self._on_audio_complete,
+        )
+
+        self._components["audio_device_manager"] = device_manager
+        self._components["audio_capture_manager"] = capture_manager
+        self._components["audio_ingress"] = ingress
+
     def _init_ipc(self) -> None:
         from kivo.ipc.handlers import IPCHandlers
         from kivo.ipc.server import IPCServer
@@ -172,11 +188,15 @@ class KivoApp:
 
         state = RuntimeState()
         state.add_listener(self._runtime_listener)
+
         try:
             handlers = IPCHandlers(
                 state,
                 self._components["drive"],
                 self._components["task_orchestrator"],
+                audio_device_manager=self._components.get("audio_device_manager"),
+                audio_capture_manager=self._components.get("audio_capture_manager"),
+                audio_ingress=self._components.get("audio_ingress"),
             )
             server = IPCServer(
                 self._socket_path,
@@ -296,6 +316,39 @@ class KivoApp:
     def _on_screen_context_update(self, frame) -> None:
         self._publish("screen_context_updated", self._screen_snapshot(frame))
 
+    def _on_audio_state_change(self, status) -> None:
+        import time
+
+        state = status.state
+        if state == "capturing":
+            if self._runtime_state is not None:
+                self._runtime_state.set_audio_state("capturing", f"recording ({status.device_name})")
+                self._runtime_state.set_assistant_state("listening", "push-to-talk active")
+            self._publish("audio_capture_started", {
+                "device_name": status.device_name,
+                "timestamp": round(time.time(), 3),
+            })
+        elif state == "idle":
+            if self._runtime_state is not None:
+                self._runtime_state.set_audio_state("idle", "microphone ready")
+                self._runtime_state.set_assistant_state("idle", "capture completed")
+            self._publish("audio_capture_stopped", {
+                "timestamp": round(time.time(), 3),
+            })
+        elif state == "error":
+            if self._runtime_state is not None:
+                self._runtime_state.set_audio_state("error", status.error_message)
+            self._publish("audio_capture_error", {
+                "error": status.error_message,
+                "timestamp": round(time.time(), 3),
+            })
+
+    def _on_audio_complete(self, capture) -> None:
+        ingress = self._components.get("audio_ingress")
+        if ingress is not None:
+            ingress.submit(capture)
+        self._publish("audio_capture_completed", capture.metadata())
+
     @staticmethod
     def _screen_snapshot(frame) -> dict:
         """UI-safe context metadata: no OCR text and no captured image."""
@@ -387,6 +440,21 @@ class KivoApp:
         if confirm is not None:
             try:
                 confirm.bind(None, None, None)
+            except Exception:
+                pass
+
+        # Close active audio capture and clear buffers
+        audio_cm = self._components.get("audio_capture_manager")
+        if audio_cm is not None:
+            try:
+                audio_cm.close()
+            except Exception:
+                pass
+
+        audio_ingress = self._components.get("audio_ingress")
+        if audio_ingress is not None:
+            try:
+                audio_ingress.clear()
             except Exception:
                 pass
 

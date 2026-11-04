@@ -85,7 +85,8 @@ ShellRoot {
         // the collapsed notch never steals focus from niri.  When collapsed
         // and not hovered we explicitly release focus, which keeps Escape
         // available to the focused application.
-        focusable: true
+        focusable: (shell.focusOnExpand
+            && (notch.expanded || notch.hovered))
 
         WlrLayershell.namespace: shell.layerNamespace
         WlrLayershell.layer: shell.overlayLayer ? WlrLayer.Overlay : WlrLayer.Top
@@ -172,6 +173,11 @@ ShellRoot {
         function toggleDashboard(): void { shell.dashboardOpen = !shell.dashboardOpen }
         function dashboardOpen(): bool { return shell.dashboardOpen }
 
+        function startCapture(): void { notch.startPushToTalk() }
+        function stopCapture(): void { notch.stopPushToTalk() }
+        function cancelCapture(): void { notch.cancelPushToTalk() }
+        function audioState(): string { return notch.audioState }
+
         function snapshot(): string {
             return JSON.stringify({
                 state: notch.visualState,
@@ -196,6 +202,8 @@ ShellRoot {
                 transientTitle: notch.transientTitle,
                 transientDetail: notch.transientDetail,
                 reducedMotion: notch.reducedMotion,
+                audioState: notch.audioState,
+                audioCapturing: notch.audioState === "capturing",
                 panelWidth: panel.width,
                 panelHeight: panel.height,
                 panelImplicitWidth: panel.implicitWidth,

@@ -39,6 +39,18 @@ REQUEST_OPERATIONS = frozenset({
     "subscribe_events",
     "unsubscribe_events",
     "cancel_active_task",
+    "audio_get_status",
+    "audio.get_status",
+    "audio_list_devices",
+    "audio.list_devices",
+    "audio_select_device",
+    "audio.select_device",
+    "audio_start_capture",
+    "audio.start_capture",
+    "audio_stop_capture",
+    "audio.stop_capture",
+    "audio_cancel_capture",
+    "audio.cancel_capture",
 })
 
 EVENT_NAMES = (
@@ -55,6 +67,16 @@ EVENT_NAMES = (
     "screen_context_updated",
     "task_history_updated",
     "agent_state_changed",
+    "audio_device_changed",
+    "audio.device_changed",
+    "audio_capture_started",
+    "audio.capture_started",
+    "audio_capture_stopped",
+    "audio.capture_stopped",
+    "audio_capture_completed",
+    "audio.capture_completed",
+    "audio_capture_error",
+    "audio.capture_error",
     "error",
 )
 EVENT_NAME_SET = frozenset(EVENT_NAMES)
@@ -158,6 +180,20 @@ def decode_request(body: bytes) -> Request:
             raise ProtocolError(
                 exc.code, exc.message, request_id=request_id
             ) from exc
+    elif operation in ("audio_select_device", "audio.select_device"):
+        try:
+            _validate_audio_select_device_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("audio_start_capture", "audio.start_capture"):
+        try:
+            _validate_audio_start_capture_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
     elif params:
         raise ProtocolError(
             "invalid_params",
@@ -166,6 +202,30 @@ def decode_request(body: bytes) -> Request:
         )
 
     return Request(request_id=request_id, operation=operation, params=params)
+
+
+def _validate_audio_select_device_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"device"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    device = params.get("device")
+    if device is not None and not isinstance(device, str):
+        raise ProtocolError("invalid_params", "device must be a string")
+
+
+def _validate_audio_start_capture_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"device"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    device = params.get("device")
+    if device is not None and not isinstance(device, str):
+        raise ProtocolError("invalid_params", "device must be a string")
 
 
 def _validate_subscription_params(params: dict[str, Any]) -> None:

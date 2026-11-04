@@ -15,14 +15,25 @@ class IPCHandlers:
     API-key access, voiceprint access and confirmation resolution.
     """
 
-    def __init__(self, state: RuntimeState, drive, orchestrator):
+    def __init__(
+        self,
+        state: RuntimeState,
+        drive,
+        orchestrator,
+        audio_device_manager=None,
+        audio_capture_manager=None,
+        audio_ingress=None,
+    ):
         self._state = state
         self._drive = drive
         self._orchestrator = orchestrator
+        self._audio_dm = audio_device_manager
+        self._audio_cm = audio_capture_manager
+        self._audio_ingress = audio_ingress
 
     def get_status(self) -> dict:
         snapshot = self._state.snapshot()
-        return {
+        status_dict = {
             "service": "kivo",
             "version": __version__,
             "protocol_version": PROTOCOL_VERSION,
@@ -37,6 +48,9 @@ class IPCHandlers:
             "active_task": self._orchestrator.has_active_tasks(),
             "drive": self._drive_snapshot(),
         }
+        if self._audio_dm is not None:
+            status_dict["audio"] = self.audio_get_status()
+        return status_dict
 
     def get_current_task(self) -> dict:
         plan = self._orchestrator.get_current_task()
@@ -45,11 +59,14 @@ class IPCHandlers:
         return {"task": self._orchestrator.public_task_snapshot(plan)}
 
     def get_dashboard_data(self) -> dict:
-        return {
+        data = {
             "status": self.get_status(),
             "current_task": self.get_current_task()["task"],
             "task_history": self._orchestrator.task_history_snapshot(limit=10),
         }
+        if self._audio_dm is not None:
+            data["audio"] = self.audio_get_status()
+        return data
 
     def cancel_active_task(self) -> dict:
         was_active = self._orchestrator.has_active_tasks()
@@ -58,6 +75,91 @@ class IPCHandlers:
             "cancelled": was_active,
             "message": message,
         }
+
+    # ── Audio operations ───────────────────────────────────────────────────
+
+    def audio_get_status(self) -> dict:
+        if self._audio_dm is None or self._audio_cm is None:
+            return {
+                "available": False,
+                "state": "unavailable",
+                "device": None,
+                "devices_count": 0,
+                "capturing": False,
+                "duration": 0.0,
+                "peak_amplitude": 0.0,
+                "rms_amplitude": 0.0,
+                "error_message": "Audio subsystem is not initialized",
+                "last_capture": None,
+            }
+        devices = self._audio_dm.list_devices()
+        selected = self._audio_dm.get_selected_device()
+        cap_status = self._audio_cm.get_status()
+        last_meta = self._audio_ingress.get_latest_metadata() if self._audio_ingress else None
+        return {
+            "available": len(devices) > 0 and (selected.is_available if selected else False),
+            "state": cap_status.state,
+            "device": selected.to_dict() if selected else None,
+            "devices_count": len(devices),
+            "capturing": cap_status.state == "capturing",
+            "duration": cap_status.duration,
+            "peak_amplitude": cap_status.peak_amplitude,
+            "rms_amplitude": cap_status.rms_amplitude,
+            "error_message": cap_status.error_message,
+            "last_capture": last_meta,
+        }
+
+    def audio_list_devices(self) -> dict:
+        if self._audio_dm is None:
+            return {"devices": [], "selected": None}
+        devices = self._audio_dm.list_devices(refresh=True)
+        selected = self._audio_dm.get_selected_device()
+        return {
+            "devices": [d.to_dict() for d in devices],
+            "selected": selected.to_dict() if selected else None,
+        }
+
+    def audio_select_device(self, params: dict | None = None) -> dict:
+        if self._audio_dm is None:
+            return {"ok": False, "error": "Audio subsystem not initialized"}
+        target = ""
+        if params and isinstance(params, dict):
+            target = params.get("device", "") or ""
+        try:
+            device = self._audio_dm.select_device(target)
+            return {"ok": True, "device": device.to_dict()}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def audio_start_capture(self, params: dict | None = None) -> dict:
+        if self._audio_cm is None:
+            return {"ok": False, "error": "Audio subsystem not initialized"}
+        device = params.get("device") if (params and isinstance(params, dict)) else None
+        ok = self._audio_cm.start_capture(device)
+        status = self._audio_cm.get_status()
+        return {
+            "ok": ok,
+            "state": status.state,
+            "device_name": status.device_name,
+            "error": status.error_message if not ok else None,
+        }
+
+    def audio_stop_capture(self) -> dict:
+        if self._audio_cm is None:
+            return {"ok": False, "capture": None}
+        capture = self._audio_cm.stop_capture()
+        if capture is None:
+            return {"ok": False, "capture": None}
+        return {
+            "ok": True,
+            "capture": capture.metadata(),
+        }
+
+    def audio_cancel_capture(self) -> dict:
+        if self._audio_cm is None:
+            return {"ok": False}
+        ok = self._audio_cm.cancel_capture()
+        return {"ok": ok}
 
     def _drive_snapshot(self) -> dict:
         state = self._drive.snapshot()
