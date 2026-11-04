@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    ".opencode/instructions/KIVO_STANDARDS.md"
+  ],
+  "agent": {
+    "planner": {
+      "description": "Expert planning specialist for KIVO milestones and architecture planning",
+      "mode": "subagent",
+      "prompt": "{file:agents/planner.md}"
+    },
+    "architect": {
+      "description": "Software architecture specialist for KIVO system design and IPC boundaries",
+      "mode": "subagent",
+      "prompt": "{file:agents/architect.md}"
+    },
+    "python-reviewer": {
+      "description": "Expert Python reviewer for PEP 8, typing, safety, and KIVO patterns",
+      "mode": "subagent",
+      "prompt": "{file:agents/python-reviewer.md}"
+    },
+    "security-reviewer": {
+      "description": "Security specialist for IPC, credentials, and desktop action boundaries",
+      "mode": "subagent",
+      "prompt": "{file:agents/security-reviewer.md}"
+    }
+  }
+}
