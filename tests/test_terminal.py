@@ -364,5 +364,117 @@ class TerminalToolIntegrationTest(unittest.TestCase):
             self.assertIn("disabled", denial.lower())
 
 
+class TerminalCommonApprovalTest(unittest.IsolatedAsyncioTestCase):
+    """The common executor path validates before approval and never double-confirms."""
+
+    class FakeExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, request):
+            from kivo.agent.terminal.command_schemas import CommandExecutionResult
+            self.calls.append(request)
+            return CommandExecutionResult(
+                command=request.command,
+                arguments=list(request.arguments),
+                working_directory=request.working_directory,
+                exit_code=0,
+                stdout="Linux\n",
+                stderr="",
+                execution_time=0.01,
+                success=True,
+            )
+
+    async def _wait_for_pending(self, gate):
+        import asyncio
+        for _ in range(100):
+            pending = gate.get_pending_requests()
+            if pending:
+                return pending[0]
+            await asyncio.sleep(0.01)
+        self.fail("approval request never became pending")
+
+    async def test_invalid_command_is_rejected_before_approval(self):
+        from kivo.agent.tool_executor import ToolExecutor
+        from kivo.agent.tool_registry import ToolRegistry
+        from kivo.agent.tool_schema import ToolCall
+
+        gate = ApprovalGate(timeout_seconds=2.0)
+        fake_executor = self.FakeExecutor()
+        registry = ToolRegistry()
+        registry.register(create_terminal_tool(gate, executor=fake_executor))
+        executor = ToolExecutor(registry, approval_gate=gate)
+
+        result = await executor.execute(
+            ToolCall(
+                tool_call_id="call-invalid",
+                tool_name="run_readonly_command",
+                arguments={
+                    "command": "rm",
+                    "arguments": ["-rf", "/"],
+                    "reason": "test invalid command",
+                },
+            ),
+            set(),
+            turn_id="turn-invalid",
+        )
+        self.assertFalse(result.success)
+        self.assertIn("not in the read-only allowlist", result.error_message)
+        self.assertEqual(gate.get_pending_requests(), [])
+        self.assertEqual(fake_executor.calls, [])
+
+    async def test_valid_command_uses_one_common_approval(self):
+        from kivo.agent.tool_executor import ToolExecutor
+        from kivo.agent.tool_registry import ToolRegistry
+        from kivo.agent.tool_schema import ToolCall
+
+        gate = ApprovalGate(timeout_seconds=2.0)
+        fake_executor = self.FakeExecutor()
+        registry = ToolRegistry()
+        registry.register(create_terminal_tool(gate, executor=fake_executor))
+        executor = ToolExecutor(registry, approval_gate=gate)
+
+        task = asyncio.create_task(
+            executor.execute(
+                ToolCall(
+                    tool_call_id="call-valid",
+                    tool_name="run_readonly_command",
+                    arguments={
+                        "command": "uname",
+                        "arguments": ["-s"],
+                        "reason": "test valid command",
+                    },
+                ),
+                set(),
+                turn_id="turn-valid",
+            )
+        )
+        pending = await self._wait_for_pending(gate)
+        self.assertEqual(pending["command"], "uname")
+        self.assertEqual(pending["turn_id"], "turn-valid")
+
+        gate.resolve(pending["token"], approved=True, turn_id="turn-valid")
+        result = await asyncio.wait_for(task, timeout=2.0)
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(len(fake_executor.calls), 1)
+        self.assertEqual(gate.get_pending_requests(), [])
+
+    async def test_direct_handler_validates_before_internal_gate(self):
+        gate = ApprovalGate(timeout_seconds=2.0)
+        fake_executor = self.FakeExecutor()
+        tool = create_terminal_tool(gate, executor=fake_executor)
+
+        result = await tool.handler(
+            {
+                "command": "sudo",
+                "arguments": ["reboot"],
+                "reason": "test direct invalid call",
+            }
+        )
+        self.assertIn("error", result)
+        self.assertEqual(gate.get_pending_requests(), [])
+        self.assertEqual(fake_executor.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

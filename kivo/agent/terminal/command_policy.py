@@ -264,7 +264,8 @@ def validate_terminal_command(command: str, arguments: list[str]) -> tuple[str, 
     # 1. Block explicitly forbidden commands with tailored message
     if clean_cmd in FORBIDDEN_COMMANDS:
         raise CommandPolicyError(
-            f"Command '{clean_cmd}' is prohibited. Stage 10 only allows read-only system inspection commands."
+            f"Command '{clean_cmd}' is not in the read-only allowlist and is "
+            f"prohibited. Stage 10 only allows read-only system inspection commands."
         )
 
     # 2. Check allowlist

@@ -611,7 +611,7 @@ Item {
                             anchors.fill: parent
                             onClicked: {
                                 if (page.ipc && page.ipc.pendingCommandApproval) {
-                                    page.ipc.commandResolveApproval(page.ipc.pendingCommandApproval.token, false, null)
+                                    page.ipc.commandResolveApproval(page.ipc.pendingCommandApproval.token, false, page.ipc.pendingCommandApproval.turn_id, page.ipc.pendingCommandApproval.tool_call_id, null)
                                 }
                             }
                         }
@@ -638,7 +638,7 @@ Item {
                             anchors.fill: parent
                             onClicked: {
                                 if (page.ipc && page.ipc.pendingCommandApproval) {
-                                    page.ipc.commandResolveApproval(page.ipc.pendingCommandApproval.token, true, null)
+                                    page.ipc.commandResolveApproval(page.ipc.pendingCommandApproval.token, true, page.ipc.pendingCommandApproval.turn_id, page.ipc.pendingCommandApproval.tool_call_id, null)
                                 }
                             }
                         }

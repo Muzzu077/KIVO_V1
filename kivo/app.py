@@ -197,7 +197,14 @@ class KivoApp:
 
         # Initialize Conversational Brain (ConversationManager)
         from kivo.conversation import ConversationManager
+        from kivo.files.tools import BoundedFileWorker
+
+        # The application owns the read-only filesystem worker's final
+        # shutdown. ConversationManager receives it so it can cancel active
+        # work and pending approvals before application teardown.
+        file_worker = BoundedFileWorker()
         conv_mgr = ConversationManager(
+            action_registry=self._components.get("action_registry"),
             on_state_change=self._on_conversation_state_change,
             on_user_message=self._on_conversation_user_message,
             on_response_started=self._on_conversation_response_started,
@@ -209,6 +216,7 @@ class KivoApp:
             on_tool_completed=self._on_agent_tool_completed,
             on_approval_requested=self._on_command_approval_requested,
             on_approval_resolved=self._on_command_approval_resolved,
+            file_worker=file_worker,
         )
 
         self._components["audio_device_manager"] = device_manager
@@ -216,6 +224,7 @@ class KivoApp:
         self._components["audio_ingress"] = ingress
         self._components["transcription_manager"] = transcription_mgr
         self._components["conversation_manager"] = conv_mgr
+        self._components["file_worker"] = file_worker
 
     def _init_ipc(self) -> None:
         from kivo.ipc.handlers import IPCHandlers
@@ -583,6 +592,15 @@ class KivoApp:
         if conv_mgr is not None:
             try:
                 conv_mgr.close()
+            except Exception:
+                pass
+
+        # The application owns final shutdown of the filesystem worker. The
+        # conversation manager has already cancelled active work and approvals.
+        file_worker = self._components.get("file_worker")
+        if file_worker is not None:
+            try:
+                file_worker.close()
             except Exception:
                 pass
 

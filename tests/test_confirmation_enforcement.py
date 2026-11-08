@@ -105,6 +105,42 @@ class TestRegistryConfirmation(unittest.TestCase):
         self.assertEqual(result, "Denied by policy")
         self.assertEqual(self.ran, [])
 
+    def test_preauthorized_confirmation_runs_without_second_banner(self):
+        def delete(parameters=None):
+            self.ran.append(parameters)
+            return "deleted"
+
+        self._register("file_controller", delete)
+        with patch("core.action_policy.check",
+                   return_value=(Risk.HIGH, Control.CONFIRM, None)), \
+             patch("core.action_policy.record_execution"):
+            result = self.registry.run(
+                "file_controller",
+                {"action": "delete", "path": "/tmp/x"},
+                preauthorized=True,
+            )
+
+        self.assertEqual(result, "deleted")
+        self.assertEqual(len(self.ran), 1)
+        self.assertFalse(self.ran[0].get("_policy_confirmed"))
+
+    def test_preauthorized_denial_still_denies(self):
+        def delete(parameters=None):
+            self.ran.append(parameters)
+            return "deleted"
+
+        self._register("file_controller", delete)
+        with patch("core.action_policy.check",
+                   return_value=(Risk.CRITICAL, Control.DENY, "Denied by policy")):
+            result = self.registry.run(
+                "file_controller",
+                {"action": "delete", "path": "/tmp/x"},
+                preauthorized=True,
+            )
+
+        self.assertEqual(result, "Denied by policy")
+        self.assertEqual(self.ran, [])
+
 
 if __name__ == "__main__":
     unittest.main()

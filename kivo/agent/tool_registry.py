@@ -45,3 +45,29 @@ class ToolRegistry:
         """Return names of all registered tools."""
         with self._lock:
             return sorted(self._tools.keys())
+
+    def list_mutating_tool_names(self) -> list[str]:
+        """Return names of tools marked as filesystem mutations.
+
+        Stage 11.2 registry construction remains strictly read-only; this helper
+        exists so lifecycle and security checks can prove that invariant without
+        inspecting private registry state.
+        """
+        with self._lock:
+            return sorted(
+                name
+                for name, tool in self._tools.items()
+                if getattr(tool, "mutating", False)
+            )
+
+    def has_mutating_tools(self) -> bool:
+        return bool(self.list_mutating_tool_names())
+
+    def assert_read_only(self) -> None:
+        """Fail if any registered tool claims mutation capability."""
+        mutating = self.list_mutating_tool_names()
+        if mutating:
+            raise RuntimeError(
+                "The default tool registry must remain read-only in Stage "
+                "11.3.1a; mutating tool(s) registered: " + ", ".join(mutating)
+            )

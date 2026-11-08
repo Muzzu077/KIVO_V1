@@ -29,6 +29,7 @@ CURRENT_TIME_TOOL = ToolDefinition(
         "type": "object",
         "properties": {},
         "required": [],
+        "additionalProperties": False,
     },
     handler=handle_get_current_time,
     permission=PermissionLevel.READ_ONLY,

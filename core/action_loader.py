@@ -154,11 +154,35 @@ class ActionRegistry:
     def names(self) -> set[str]:
         return set(self._actions.keys())
 
+    def get_record(self, name: str) -> Optional[ActionRecord]:
+        """Return the validated record for an action, if it exists."""
+        rec = self._actions.get(name)
+        if rec is None or not rec.valid:
+            return None
+        return rec
+
     # -- called by main.py from _execute_tool --
-    def run(self, name: str, parameters: dict, ctx: dict | None = None) -> str:
+    def run(
+        self,
+        name: str,
+        parameters: dict,
+        ctx: dict | None = None,
+        *,
+        preauthorized: bool = False,
+    ) -> str:
         rec = self._actions.get(name)
         if rec is None or not rec.valid:
             return f"Action '{name}' is not available."
+
+        parameters = dict(parameters or {})
+
+        # Runtime bookkeeping keys are never model input. Rejecting them at the
+        # dispatch choke point prevents a model from forging a confirmation.
+        for key in parameters:
+            if isinstance(key, str) and key.startswith("_"):
+                return (
+                    f"Internal argument '{key}' is not accepted by action '{name}'."
+                )
 
         # ── Policy check ──────────────────────────────────────────────
         start_time = _time_module.monotonic()
@@ -176,7 +200,7 @@ class ActionRegistry:
             if denial:
                 return denial
 
-            if control == Control.CONFIRM and not parameters.get("_policy_confirmed"):
+            if control == Control.CONFIRM and not preauthorized:
                 # Park the whole call behind the on-screen gate. The model never
                 # gets to write its own permission slip, and the handler does not
                 # run at all until a human presses CONFIRM.

@@ -726,8 +726,13 @@ Scope {
     }
 
     // ── Command approval control ───────────────────────────────────────────
-    function commandResolveApproval(token, approved, callback) {
-        return request("command_resolve_approval", { "token": String(token), "approved": approved === true }, function(error, result) {
+    function commandResolveApproval(token, approved, turnId, toolCallId, callback) {
+        return request("command_resolve_approval", {
+            "token": String(token),
+            "approved": approved === true,
+            "turn_id": String(turnId || ""),
+            "tool_call_id": String(toolCallId || "")
+        }, function(error, result) {
             if (typeof callback === "function")
                 callback(error, result)
         })

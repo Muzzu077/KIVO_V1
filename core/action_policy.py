@@ -82,6 +82,10 @@ class AuditEntry:
     outcome: str            # "executed", "confirmed", "denied", "error"
     result_snippet: str     # first 200 chars of result
     duration: float = 0.0
+    # Shared agent authorization metadata. Empty for legacy-only callers.
+    turn_id: str = ""
+    tool_call_id: str = ""
+    decision: str = ""
 
 
 _AUDIT_MAX = 1000
@@ -390,7 +394,12 @@ def trust_session(enabled: bool = True) -> None:
 
 # ── Lookup ─────────────────────────────────────────────────────────────────
 
-def lookup(tool: str, action: str = "*") -> tuple[Risk, Control]:
+def lookup(
+    tool: str,
+    action: str = "*",
+    *,
+    respect_trust: bool = True,
+) -> tuple[Risk, Control]:
     """
     Get the (Risk, Control) for a specific (tool, action) pair.
     Resolution order:
@@ -400,6 +409,10 @@ def lookup(tool: str, action: str = "*") -> tuple[Risk, Control]:
       4. Static policy for (tool, action)
       5. Static policy for (tool, "*")
       6. _DEFAULT_POLICY
+
+    ``respect_trust=False`` keeps CONFIRM controls in force even when the
+    legacy ``trust_session`` demo switch is enabled. The shared agent
+    authorization path always uses this mode.
     """
     with _policy_lock:
         # 1. Exact override
@@ -418,34 +431,46 @@ def lookup(tool: str, action: str = "*") -> tuple[Risk, Control]:
     entry = _POLICY.get((tool, action))
     if entry:
         risk, ctrl = entry
-        return _maybe_trust(risk, ctrl)
+        return _maybe_trust(risk, ctrl, respect_trust)
     # 5. Wildcard static policy
     entry = _POLICY.get((tool, "*"))
     if entry:
         risk, ctrl = entry
-        return _maybe_trust(risk, ctrl)
+        return _maybe_trust(risk, ctrl, respect_trust)
     # 6. Default
     risk, ctrl = _DEFAULT_POLICY
-    return _maybe_trust(risk, ctrl)
+    return _maybe_trust(risk, ctrl, respect_trust)
 
 
-def _maybe_trust(risk: Risk, ctrl: Control) -> tuple[Risk, Control]:
+def _maybe_trust(
+    risk: Risk,
+    ctrl: Control,
+    respect_trust: bool = True,
+) -> tuple[Risk, Control]:
     """If trust_session is on, downgrade CONFIRM → LOG for non-critical."""
-    if _trust_session and ctrl == Control.CONFIRM and risk != Risk.CRITICAL:
+    if respect_trust and _trust_session and ctrl == Control.CONFIRM and risk != Risk.CRITICAL:
         return risk, Control.LOG
     return risk, ctrl
 
 
 # ── Enforcement ────────────────────────────────────────────────────────────
 
-def check(tool: str, action: str, parameters: dict) -> tuple[Risk, Control, str]:
+def check(
+    tool: str,
+    action: str,
+    parameters: dict,
+    *,
+    respect_trust: bool = True,
+    turn_id: str = "",
+    tool_call_id: str = "",
+) -> tuple[Risk, Control, str]:
     """
     Evaluate the policy for a tool call and return (risk, control, reason).
 
     reason is empty string if allowed, or a denial message if Control.DENY.
     This is called by ActionRegistry.run() before executing the handler.
     """
-    risk, ctrl = lookup(tool, action)
+    risk, ctrl = lookup(tool, action, respect_trust=respect_trust)
 
     if ctrl == Control.DENY:
         reason = (
@@ -457,6 +482,7 @@ def check(tool: str, action: str, parameters: dict) -> tuple[Risk, Control, str]
             parameters=_safe_params(parameters),
             risk=risk, control=ctrl,
             outcome="denied", result_snippet=reason,
+            turn_id=turn_id, tool_call_id=tool_call_id, decision="deny",
         ))
         return risk, ctrl, reason
 
@@ -472,6 +498,10 @@ def record_execution(
     outcome: str,
     result: str,
     duration: float = 0.0,
+    *,
+    turn_id: str = "",
+    tool_call_id: str = "",
+    decision: str = "",
 ) -> None:
     """Record a completed tool execution in the audit log."""
     _audit(AuditEntry(
@@ -480,6 +510,7 @@ def record_execution(
         risk=risk, control=control,
         outcome=outcome, result_snippet=(result or "")[:200],
         duration=duration,
+        turn_id=turn_id, tool_call_id=tool_call_id, decision=decision,
     ))
 
 

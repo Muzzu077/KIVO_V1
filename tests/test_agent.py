@@ -94,6 +94,16 @@ class ToolPolicyAndExecutorTest(unittest.TestCase):
         self.assertFalse(res.success)
         self.assertIn("Unknown tool", res.error_message)
 
+    def test_non_object_arguments_are_rejected(self):
+        call = ToolCall(
+            tool_call_id="c_bad_args",
+            tool_name="get_current_time",
+            arguments=[],  # type: ignore[arg-type]
+        )
+        res = asyncio.run(self.executor.execute(call, set()))
+        self.assertFalse(res.success)
+        self.assertIn("must be an object", res.error_message)
+
     def test_tool_call_id_deduplication_prevents_replay(self):
         executed = {"call_already_run"}
         call = ToolCall(tool_call_id="call_already_run", tool_name="get_current_time", arguments={})
@@ -246,6 +256,217 @@ class AgentRuntimeTest(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 5.0)
         # Should have executed max 5 rounds of tool turns
         self.assertLessEqual(len(messages), 1 + (5 * 2))
+
+
+class CommonApprovalEnforcementTest(unittest.IsolatedAsyncioTestCase):
+    """CONFIRMATION_REQUIRED must be enforced by ToolExecutor, not each handler."""
+
+    async def _wait_for_pending(self, gate):
+        for _ in range(100):
+            pending = gate.get_pending_requests()
+            if pending:
+                return pending[0]
+            await asyncio.sleep(0.01)
+        self.fail("approval request never became pending")
+
+    async def test_confirmation_required_tool_requests_bound_approval(self):
+        from kivo.agent.approval_gate import ApprovalGate
+        from kivo.agent.authorization import AuthorizationPolicy
+
+        ran = []
+
+        async def handler(arguments, tool_call_id="", execution_grant=None):
+            ran.append((arguments, tool_call_id, execution_grant))
+            return {"ok": True}
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="sensitive_tool",
+                description="test",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+                permission=PermissionLevel.CONFIRMATION_REQUIRED,
+                timeout_seconds=5.0,
+            )
+        )
+        gate = ApprovalGate(timeout_seconds=2.0)
+        executor = ToolExecutor(
+            registry,
+            approval_gate=gate,
+            authorization_policy=AuthorizationPolicy(),
+        )
+
+        task = asyncio.create_task(
+            executor.execute(
+                ToolCall(
+                    tool_call_id="call-bound-1",
+                    tool_name="sensitive_tool",
+                    arguments={},
+                ),
+                set(),
+                turn_id="turn-bound-1",
+            )
+        )
+        pending = await self._wait_for_pending(gate)
+        self.assertEqual(pending["turn_id"], "turn-bound-1")
+        self.assertEqual(pending["tool_call_id"], "call-bound-1")
+        self.assertEqual(pending["tool_name"], "sensitive_tool")
+
+        self.assertTrue(
+            gate.resolve(pending["token"], approved=True, turn_id="turn-bound-1")[0]
+        )
+        result = await asyncio.wait_for(task, timeout=2.0)
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(len(ran), 1)
+        grant = ran[0][2]
+        self.assertEqual(grant.turn_id, "turn-bound-1")
+        self.assertEqual(grant.tool_call_id, "call-bound-1")
+        self.assertTrue(grant.authorized)
+
+    async def test_confirmation_required_tool_fails_closed_without_gate(self):
+        ran = []
+
+        def handler(arguments):
+            ran.append(arguments)
+            return {"ok": True}
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="sensitive_tool",
+                description="test",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+                permission=PermissionLevel.CONFIRMATION_REQUIRED,
+            )
+        )
+        executor = ToolExecutor(registry)
+        result = await executor.execute(
+            ToolCall(
+                tool_call_id="call-no-gate",
+                tool_name="sensitive_tool",
+                arguments={},
+            ),
+            set(),
+            turn_id="turn-no-gate",
+        )
+        self.assertFalse(result.success)
+        self.assertIn("approval", result.error_message.lower())
+        self.assertEqual(ran, [])
+
+    async def test_rejection_prevents_execution(self):
+        from kivo.agent.approval_gate import ApprovalGate
+
+        ran = []
+
+        async def handler(arguments):
+            ran.append(arguments)
+            return {"ok": True}
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="sensitive_tool",
+                description="test",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+                permission=PermissionLevel.CONFIRMATION_REQUIRED,
+            )
+        )
+        gate = ApprovalGate(timeout_seconds=2.0)
+        executor = ToolExecutor(registry, approval_gate=gate)
+        task = asyncio.create_task(
+            executor.execute(
+                ToolCall(
+                    tool_call_id="call-reject",
+                    tool_name="sensitive_tool",
+                    arguments={},
+                ),
+                set(),
+                turn_id="turn-reject",
+            )
+        )
+        pending = await self._wait_for_pending(gate)
+        gate.resolve(pending["token"], approved=False, turn_id="turn-reject")
+
+        result = await asyncio.wait_for(task, timeout=2.0)
+        self.assertFalse(result.success)
+        self.assertIn("rejected", result.error_message.lower())
+        self.assertEqual(ran, [])
+
+    async def test_synchronous_mutating_handler_is_refused(self):
+        def handler(arguments):
+            return {"ok": True}
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="sync_sensitive",
+                description="test",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+                permission=PermissionLevel.CONFIRMATION_REQUIRED,
+            )
+        )
+        executor = ToolExecutor(registry)
+        result = await executor.execute(
+            ToolCall(
+                tool_call_id="call-sync",
+                tool_name="sync_sensitive",
+                arguments={},
+            ),
+            set(),
+            turn_id="turn-sync",
+        )
+        self.assertFalse(result.success)
+        self.assertIn("synchronous", result.error_message.lower())
+
+    async def test_audit_records_turn_and_call_without_arguments(self):
+        from core.action_policy import get_audit_log
+        from kivo.agent.authorization import AuthorizationPolicy
+
+        async def handler(arguments):
+            return {"ok": True}
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="audited_tool",
+                description="test",
+                parameters={
+                    "type": "object",
+                    "properties": {"secret": {"type": "string"}},
+                },
+                handler=handler,
+                permission=PermissionLevel.READ_ONLY,
+            )
+        )
+        executor = ToolExecutor(
+            registry,
+            authorization_policy=AuthorizationPolicy(),
+        )
+        result = await executor.execute(
+            ToolCall(
+                tool_call_id="call-audit-1",
+                tool_name="audited_tool",
+                arguments={"secret": "do-not-log-this"},
+            ),
+            set(),
+            turn_id="turn-audit-1",
+        )
+        self.assertTrue(result.success)
+
+        entries = [
+            entry for entry in get_audit_log(limit=20)
+            if entry.tool == "audited_tool"
+        ]
+        self.assertTrue(entries)
+        entry = entries[0]
+        self.assertEqual(entry.turn_id, "turn-audit-1")
+        self.assertEqual(entry.tool_call_id, "call-audit-1")
+        self.assertEqual(entry.decision, "allow")
+        self.assertNotIn("do-not-log-this", str(entry.parameters))
 
 
 if __name__ == "__main__":

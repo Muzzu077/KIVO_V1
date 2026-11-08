@@ -35,6 +35,7 @@ class AgentRuntime:
         on_delta: Optional[Callable[[str, str], None]] = None,
         on_tool_started: Optional[Callable[[str, str], None]] = None,
         on_tool_completed: Optional[Callable[[ToolResult], None]] = None,
+        turn_id: str = "",
         **kwargs,
     ) -> str:
         """Run the bounded agent turn, executing tools and continuing until model answers."""
@@ -86,7 +87,11 @@ class AgentRuntime:
                         except Exception:
                             pass
 
-                    result = await self._executor.execute(call, executed_ids)
+                    result = await self._executor.execute(
+                        call,
+                        executed_ids,
+                        turn_id=turn_id,
+                    )
 
                     if on_tool_completed is not None:
                         try:

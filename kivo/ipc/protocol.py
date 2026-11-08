@@ -396,7 +396,7 @@ def _validate_conversation_update_config_params(params: dict[str, Any]) -> None:
 
 
 def _validate_command_resolve_approval_params(params: dict[str, Any]) -> None:
-    unknown = set(params) - {"token", "approved"}
+    unknown = set(params) - {"token", "approved", "turn_id", "tool_call_id"}
     if unknown:
         raise ProtocolError(
             "invalid_params",
@@ -408,6 +408,28 @@ def _validate_command_resolve_approval_params(params: dict[str, Any]) -> None:
     approved = params.get("approved")
     if not isinstance(approved, bool):
         raise ProtocolError("invalid_params", "approved must be a boolean")
+    turn_id = params.get("turn_id")
+    if not isinstance(turn_id, str) or not turn_id.strip():
+        raise ProtocolError(
+            "invalid_params",
+            "turn_id must be a non-empty string identifying the conversation turn",
+        )
+    if len(turn_id) > 128:
+        raise ProtocolError("invalid_params", "turn_id is too long")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in turn_id):
+        raise ProtocolError("invalid_params", "turn_id contains control characters")
+    tool_call_id = params.get("tool_call_id")
+    if tool_call_id is not None:
+        if not isinstance(tool_call_id, str):
+            raise ProtocolError(
+                "invalid_params", "tool_call_id must be a string"
+            )
+        if len(tool_call_id) > 128:
+            raise ProtocolError("invalid_params", "tool_call_id is too long")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in tool_call_id):
+            raise ProtocolError(
+                "invalid_params", "tool_call_id contains control characters"
+            )
 
 
 def _validate_subscription_params(params: dict[str, Any]) -> None:

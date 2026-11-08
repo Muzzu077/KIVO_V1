@@ -325,8 +325,26 @@ class IPCHandlers:
         if not params or not isinstance(params, dict):
             return {"ok": False, "message": "Missing parameters"}
         token = str(params.get("token", "")).strip()
-        approved = bool(params.get("approved", False))
-        ok, msg = self._conv.resolve_command_approval(token, approved)
+        raw_approved = params.get("approved")
+        if not token or not isinstance(raw_approved, bool):
+            return {"ok": False, "message": "token and approved are required"}
+        raw_turn = params.get("turn_id")
+        turn_id = raw_turn.strip() if isinstance(raw_turn, str) else ""
+        if not turn_id:
+            return {
+                "ok": False,
+                "message": (
+                    "A conversation turn_id is required to resolve an approval."
+                ),
+            }
+        raw_call = params.get("tool_call_id")
+        tool_call_id = raw_call.strip() if isinstance(raw_call, str) else ""
+        ok, msg = self._conv.resolve_command_approval(
+            token,
+            raw_approved,
+            turn_id=turn_id,
+            tool_call_id=tool_call_id,
+        )
         return {"ok": ok, "message": msg}
 
     def command_get_pending_approvals(self) -> dict:

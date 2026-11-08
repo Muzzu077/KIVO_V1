@@ -112,6 +112,7 @@ SYSTEM_OVERVIEW_TOOL = ToolDefinition(
         "type": "object",
         "properties": {},
         "required": [],
+        "additionalProperties": False,
     },
     handler=handle_get_system_overview,
     permission=PermissionLevel.READ_ONLY,
