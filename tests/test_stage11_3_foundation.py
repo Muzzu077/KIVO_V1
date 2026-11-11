@@ -80,6 +80,8 @@ def _display(**overrides) -> ApprovalDisplay:
     values = {
         "title": "Create text file",
         "summary": "Create docs/notes.txt in workspace demo.",
+        "preview": "hello",
+        "notice": "Existing files are never overwritten.",
     }
     values.update(overrides)
     return ApprovalDisplay(**values)
@@ -223,8 +225,11 @@ class ApprovalContextTest(unittest.TestCase):
         ):
             self.assertNotIn(private_value, serialized)
         self.assertNotIn("binding", public)
-        self.assertIn("fingerprint", public)
+        self.assertNotIn("fingerprint", public)
+        self.assertNotIn("approval_fingerprint", public)
         self.assertEqual(public["operation_kind"], "create_text_file")
+        # Fingerprint remains available in memory for handler grant validation.
+        self.assertTrue(bool(context.fingerprint))
 
     def test_nested_binding_and_display_are_immutable(self):
         context = _context()
@@ -628,7 +633,13 @@ class ToolExecutorMutationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending["approval_kind"], "filesystem_mutation")
         self.assertNotIn("root-identity-1", json.dumps(pending))
         self.assertNotIn("parent-identity-1", json.dumps(pending))
-        self.assertNotIn("hello", json.dumps(pending))
+        self.assertEqual(pending["details"]["preview"], "hello")
+        self.assertEqual(pending["details"]["title"], "Create text file")
+        self.assertEqual(pending["details"]["byte_count"], 5)
+        self.assertTrue(pending["details"]["no_overwrite"])
+        self.assertIn("never overwritten", pending["details"]["notice"].lower())
+        self.assertRegex(pending["details"]["operation_id"], r"^[0-9a-f]{32}$")
+        self.assertNotIn("grant", json.dumps(pending["details"]).lower())
 
         self.assertTrue(
             self.gate.resolve(
@@ -860,7 +871,12 @@ class ToolExecutorMutationTest(unittest.IsolatedAsyncioTestCase):
             entry for entry in get_audit_log(limit=20)
             if entry.tool == "create_text_file"
         ]
-        self.assertTrue(any(entry.outcome == "cancelled" for entry in entries))
+        self.assertTrue(
+            any(
+                entry.outcome in ("cancelled", "approval_cancelled")
+                for entry in entries
+            )
+        )
 
         second = await executor.execute(
             _mutation_call(call_id="call-2"), set(), turn_id="turn-1"
@@ -955,7 +971,7 @@ class ToolExecutorMutationTest(unittest.IsolatedAsyncioTestCase):
 
         def audit_sink(*args, **kwargs):
             calls["count"] += 1
-            if calls["count"] == 2:
+            if calls["count"] == 3:
                 raise RuntimeError("audit outcome unavailable")
             return None
 
@@ -1010,7 +1026,16 @@ class ToolExecutorMutationTest(unittest.IsolatedAsyncioTestCase):
             if entry.tool == "create_text_file"
         ]
         self.assertTrue(entries)
-        allowed_keys = {"workspace_id", "relative_path", "content_digest", "byte_count"}
+        allowed_keys = {
+            "operation_id",
+            "workspace_id",
+            "relative_path",
+            "content_digest",
+            "byte_count",
+            "committed",
+            "verified",
+            "durability",
+        }
         serialized = ""
         for entry in entries:
             self.assertTrue(set(entry.parameters).issubset(allowed_keys))
@@ -1038,6 +1063,10 @@ class ToolExecutorMutationTest(unittest.IsolatedAsyncioTestCase):
             {"content_digest": "A" * 64},
             {"byte_count": -1},
             {"byte_count": True},
+            {"operation_id": "A" * 32},
+            {"committed": "yes"},
+            {"verified": 0},
+            {"durability": "maybe"},
         ):
             self.assertFalse(
                 record_mutation_event(**base, **invalid),

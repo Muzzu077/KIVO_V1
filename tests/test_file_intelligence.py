@@ -1231,6 +1231,8 @@ class FileDescriptorLeakRegressionTests(FileServiceTestCase):
     """NEW-01 regression: verify no file descriptors leak on mount rejections or failures."""
 
     def _get_open_fd_count(self) -> int:
+        import gc
+        gc.collect()
         fd_dir = Path("/proc/self/fd")
         if fd_dir.exists():
             return len(list(fd_dir.iterdir()))

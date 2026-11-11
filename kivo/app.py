@@ -64,32 +64,39 @@ class KivoApp:
         print("Initializing KIVO backend components...")
 
         try:
-            print("  [1/9] Loading configuration...")
+            print("  [1/10] Loading configuration...")
             self._load_config()
 
-            print("  [2/9] Initializing memory...")
+            print("  [2/10] Initializing memory...")
             self._init_memory()
 
-            print("  [3/9] Initializing brain...")
+            print("  [3/10] Initializing brain...")
             self._init_brain()
 
-            print("  [4/9] Initializing screen context store...")
+            print("  [4/10] Initializing screen context store...")
             self._init_screen_context()
 
-            print("  [5/9] Loading actions...")
+            print("  [5/10] Loading actions...")
             self._init_actions()
 
-            print("  [6/9] Initializing task orchestrator...")
+            print("  [6/10] Initializing task orchestrator...")
             self._init_task_orchestrator()
 
-            print("  [7/9] Initializing Drive session...")
+            print("  [7/10] Initializing Drive session...")
             self._init_drive()
 
-            print("  [8/9] Initializing confirmation service...")
+            print("  [8/10] Initializing confirmation service...")
             self._init_confirmation()
 
-            print("  [9/9] Initializing audio subsystem and IPC server...")
+            print("  [9/10] Initializing audio subsystem...")
             self._init_audio()
+
+            print("  [10/10] Starting telemetry, microphone, clipboard, shelf, bridge, and IPC server...")
+            self._init_telemetry()
+            self._init_microphone()
+            self._init_clipboard()
+            self._init_shelf()
+            self._init_bridge()
             self._init_ipc()
 
             self._initialized = True
@@ -219,12 +226,98 @@ class KivoApp:
             file_worker=file_worker,
         )
 
+        # Initialize MPRIS MediaService
+        from kivo.media import MediaService
+        media_service = MediaService(
+            on_status_changed=self._on_media_status_changed,
+            on_lyrics_loaded=self._on_media_lyrics_loaded,
+        )
+        media_service.start()
+
         self._components["audio_device_manager"] = device_manager
         self._components["audio_capture_manager"] = capture_manager
         self._components["audio_ingress"] = ingress
         self._components["transcription_manager"] = transcription_mgr
         self._components["conversation_manager"] = conv_mgr
         self._components["file_worker"] = file_worker
+        self._components["media_service"] = media_service
+
+    def _init_telemetry(self) -> None:
+        """Start read-only telemetry service."""
+        try:
+            from kivo.telemetry import TelemetryService
+
+            telemetry = TelemetryService(
+                on_snapshot=self._on_telemetry_snapshot,
+            )
+            if telemetry.start():
+                self._components["telemetry_service"] = telemetry
+            else:
+                print("  note: telemetry service could not start")
+        except Exception:
+            # Telemetry is optional: a failure must not abort the backend.
+            print("  note: telemetry service unavailable")
+
+    def _init_microphone(self) -> None:
+        """Start default microphone mute service."""
+        try:
+            from kivo.microphone import MicrophoneService
+
+            mic = MicrophoneService(
+                on_state_changed=self._on_mic_state_changed,
+            )
+            if mic.start():
+                self._components["microphone_service"] = mic
+            else:
+                print("  note: microphone mute service could not start")
+        except Exception:
+            # Microphone service is optional: failure must not abort backend.
+            print("  note: microphone service unavailable")
+
+    def _init_clipboard(self) -> None:
+        """Start clipboard intelligence service."""
+        try:
+            from kivo.clipboard import ClipboardService
+
+            clipboard = ClipboardService(
+                on_history_changed=self._on_clip_history_changed,
+            )
+            if clipboard.start():
+                self._components["clipboard_service"] = clipboard
+            else:
+                print("  note: clipboard service could not start")
+        except Exception:
+            print("  note: clipboard service unavailable")
+
+    def _init_shelf(self) -> None:
+        """Start file shelf reference-staging service."""
+        try:
+            from kivo.shelf import FileShelfService
+
+            shelf = FileShelfService(
+                on_items_changed=self._on_shelf_items_changed,
+            )
+            if shelf.start():
+                self._components["shelf_service"] = shelf
+            else:
+                print("  note: file shelf service could not start")
+        except Exception:
+            print("  note: file shelf service unavailable")
+
+    def _init_bridge(self) -> None:
+        """Initialize phone-to-PC bridge service."""
+        try:
+            from kivo.bridge import PhoneBridgeService
+
+            bridge = PhoneBridgeService(
+                on_status_changed=self._on_bridge_status_changed,
+                on_pairing_requested=self._on_bridge_pairing_requested,
+                on_transfer_event=self._on_bridge_transfer_event,
+                shelf_service=self._components.get("shelf_service"),
+            )
+            self._components["bridge_service"] = bridge
+        except Exception:
+            print("  note: phone bridge service unavailable")
 
     def _init_ipc(self) -> None:
         from kivo.ipc.handlers import IPCHandlers
@@ -244,6 +337,12 @@ class KivoApp:
                 audio_ingress=self._components.get("audio_ingress"),
                 transcription_manager=self._components.get("transcription_manager"),
                 conversation_manager=self._components.get("conversation_manager"),
+                media_service=self._components.get("media_service"),
+                telemetry_service=self._components.get("telemetry_service"),
+                microphone_service=self._components.get("microphone_service"),
+                clipboard_service=self._components.get("clipboard_service"),
+                shelf_service=self._components.get("shelf_service"),
+                bridge_service=self._components.get("bridge_service"),
             )
             server = IPCServer(
                 self._socket_path,
@@ -281,6 +380,12 @@ class KivoApp:
             "detail": snapshot["agent_detail"],
         })
         self._publish("screen_context_updated", self._screen_snapshot(None))
+        telemetry = self._components.get("telemetry_service")
+        if telemetry is not None:
+            self._publish("telemetry_snapshot_changed", telemetry.latest_snapshot().to_dict())
+        mic = self._components.get("microphone_service")
+        if mic is not None:
+            self._publish("mic_state_changed", mic.get_state().to_dict())
 
     # ── Backend event adapters ─────────────────────────────────────────────
 
@@ -493,6 +598,41 @@ class KivoApp:
     def _on_command_approval_resolved(self, res_dict: dict) -> None:
         self._publish("command_approval_resolved", res_dict)
 
+    def _on_media_status_changed(self, snapshot) -> None:
+        self._publish("media_status_changed", snapshot.to_dict())
+
+    def _on_media_lyrics_loaded(self, lyrics) -> None:
+        self._publish("media_lyrics_loaded", lyrics.to_dict())
+
+    def _on_telemetry_snapshot(self, snapshot) -> None:
+        self._publish("telemetry_snapshot_changed", snapshot.to_dict())
+
+    def _on_mic_state_changed(self, state) -> None:
+        self._publish("mic_state_changed", state.to_dict())
+
+    def _on_clip_history_changed(self, items) -> None:
+        self._publish("clip_history_changed", {"count": len(items)})
+
+    def _on_shelf_items_changed(self, items) -> None:
+        self._publish("shelf_items_changed", {"count": len(items)})
+
+    def _on_bridge_status_changed(self, status) -> None:
+        self._publish("bridge_status_changed", status.to_dict())
+
+    def _on_bridge_pairing_requested(self, req_dict) -> None:
+        self._publish("bridge_pairing_requested", req_dict)
+
+    def _on_bridge_transfer_event(self, event: str, payload: dict) -> None:
+        if event in (
+            "bridge_transfer_requested",
+            "bridge_transfer_progress",
+            "bridge_transfer_completed",
+            "bridge_download_requested",
+            "bridge_download_progress",
+            "bridge_download_completed",
+        ):
+            self._publish(event, payload)
+
     @staticmethod
     def _screen_snapshot(frame) -> dict:
         """UI-safe context metadata: no OCR text and no captured image."""
@@ -624,6 +764,55 @@ class KivoApp:
         if audio_ingress is not None:
             try:
                 audio_ingress.clear()
+            except Exception:
+                pass
+
+        # Stop MPRIS media monitoring and close lyrics client
+        media = self._components.get("media_service")
+        if media is not None:
+            try:
+                media.close_sync()
+            except Exception:
+                pass
+
+        # Stop telemetry before the IPC server disappears. No telemetry event
+        # is published in Stage 12.2.1, but later stages rely on this order.
+        telemetry = self._components.get("telemetry_service")
+        if telemetry is not None:
+            try:
+                telemetry.close(2.0)
+            except Exception:
+                pass
+
+        # Stop microphone service before IPC server disappears. Never unmutes.
+        mic = self._components.get("microphone_service")
+        if mic is not None:
+            try:
+                mic.close(3.0)
+            except Exception:
+                pass
+
+        # Stop clipboard service before IPC server disappears.
+        clipboard = self._components.get("clipboard_service")
+        if clipboard is not None:
+            try:
+                clipboard.close(2.0)
+            except Exception:
+                pass
+
+        # Stop file shelf service before IPC server disappears.
+        shelf = self._components.get("shelf_service")
+        if shelf is not None:
+            try:
+                shelf.close()
+            except Exception:
+                pass
+
+        # Stop phone bridge service before IPC server disappears.
+        bridge = self._components.get("bridge_service")
+        if bridge is not None:
+            try:
+                bridge.close(3.0)
             except Exception:
                 pass
 

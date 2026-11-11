@@ -83,7 +83,40 @@ Item {
         DashboardRow { label: "Agent"; value: agentStateText; detail: agentStateText === "idle" ? "no active agent task" : agentStateText }
         DashboardRow { label: "Task"; value: taskGoalText.length > 0 ? taskGoalText : (taskActive ? "Task running" : "No task"); detail: taskStatusText + (taskSummaryText.length > 0 ? " — " + taskSummaryText : "") }
         DashboardRow { label: "Drive"; value: driveActive ? driveGoalText : "Idle"; detail: driveActive ? driveActionText + " · elapsed " + formatElapsed(driveElapsedSeconds) : "" }
-        Item { height: 6 }
+        Item { height: 4 }
+
+        // ── Hardware Telemetry (Stage 12.2) ──────────────────────────────────
+        Item {
+            width: parent.width
+            height: 96
+            Column {
+                anchors.fill: parent
+                spacing: 4
+                Row {
+                    spacing: 8
+                    Text {
+                        text: "Hardware Telemetry"
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontCaption
+                        font.weight: Font.DemiBold
+                        color: Theme.textSecondary
+                    }
+                    Text {
+                        text: (page.ipc && page.ipc.telemetryLinkStale) ? "· link stale" : ""
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontMicro
+                        color: Theme.warning
+                        visible: text.length > 0
+                    }
+                }
+                TelemetrySummary {
+                    width: parent.width
+                    ipc: page.ipc
+                }
+            }
+        }
+
+        Item { height: 4 }
         Item {
             width: parent.width
             height: 44

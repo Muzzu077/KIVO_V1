@@ -78,6 +78,8 @@ EVENT_NAMES = [
     "task_history_updated",
     "screen_context_updated",
     "confirmation_required",
+    "telemetry_snapshot_changed",
+    "mic_state_changed",
     "error",
 ]
 
@@ -131,6 +133,8 @@ class QmlStaticTest(unittest.TestCase):
             "components/TaskProgress.qml",
             "components/StatusIndicator.qml",
             "components/StopButton.qml",
+            "components/TelemetrySummary.qml",
+            "components/MicControlRow.qml",
             "components/KivoDashboard.qml",
             "components/DashboardOverview.qml",
             "components/DashboardActivity.qml",
@@ -324,6 +328,33 @@ class FakeBackend:
             result = {"subscribed": False}
         elif operation == "cancel_active_task":
             result = cancel_result
+        elif operation in ("telemetry_get_snapshot", "telemetry.get_snapshot"):
+            result = {
+                "sequence": 1,
+                "service_state": "ok",
+                "cpu": {"utilization": {"status": "ok", "percent": 12.0}},
+                "memory": {"status": "ok", "percent": 40.0},
+            }
+        elif operation in ("mic_get_state", "mic.get_state"):
+            result = {
+                "state": "unmuted",
+                "muted": False,
+                "verified": True,
+                "source": {"id": 84, "name": "mic"},
+            }
+        elif operation in ("mic_set_mute", "mic.set_mute"):
+            desired = bool(message.get("params", {}).get("muted"))
+            result = {
+                "ok": True,
+                "requested_muted": desired,
+                "changed": True,
+                "default_source_changed": False,
+                "state": {
+                    "state": "muted" if desired else "unmuted",
+                    "muted": desired,
+                    "verified": True,
+                },
+            }
         else:
             self._send(
                 conn,

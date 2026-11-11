@@ -66,6 +66,12 @@ MAX_RELATIVE_PATH_CHARS = 512
 MAX_COMPONENT_BYTES = 255
 MAX_QUERY_CHARS = 128
 
+# Temporary files used by the atomic mutation path.  Any workspace entry with
+# this prefix is internal state: it is never listed, searched, inspected, or
+# read through the conversational filesystem tools, even if an unexpected
+# process crash leaves one behind.
+INTERNAL_TEMP_PREFIX = ".kivo-tmp-"
+
 SENSITIVE_DIR_COMPONENTS = frozenset(
     {
         ".ssh",
@@ -1589,6 +1595,8 @@ def _fold_name(value: str) -> str:
 
 def _is_sensitive_component(component: str) -> bool:
     normalized = _fold_name(component)
+    if normalized.startswith(INTERNAL_TEMP_PREFIX):
+        return True
     if normalized in SENSITIVE_EXACT_NAMES:
         return True
     if normalized == ".env" or normalized.startswith(".env."):
@@ -1691,6 +1699,7 @@ def _safe_query_for_audit(value: object) -> str:
 
 
 __all__ = [
+    "INTERNAL_TEMP_PREFIX",
     "MAX_FILE_SIZE_BYTES",
     "MAX_LIST_RETURNED_ENTRIES",
     "MAX_LIST_SCAN_ENTRIES",

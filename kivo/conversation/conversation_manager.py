@@ -97,17 +97,6 @@ class ConversationManager:
             )
         else:
             self._tool_registry = tool_registry
-        self._tool_executor = ToolExecutor(
-            self._tool_registry,
-            approval_gate=self._approval_gate,
-            authorization_policy=self._authorization_policy,
-        )
-        self._agent_runtime = AgentRuntime(
-            provider=self._provider,
-            registry=self._tool_registry,
-            executor=self._tool_executor,
-        )
-
         self._on_state_change = on_state_change
         self._on_user_message = on_user_message
         self._on_response_started = on_response_started
@@ -117,6 +106,18 @@ class ConversationManager:
         self._on_cancelled = on_cancelled
         self._on_tool_started = on_tool_started
         self._on_tool_completed = on_tool_completed
+
+        self._tool_executor = ToolExecutor(
+            self._tool_registry,
+            approval_gate=self._approval_gate,
+            authorization_policy=self._authorization_policy,
+            on_late_mutation_result=self._on_late_mutation_result,
+        )
+        self._agent_runtime = AgentRuntime(
+            provider=self._provider,
+            registry=self._tool_registry,
+            executor=self._tool_executor,
+        )
 
         self._lock = threading.Lock()
         self._state = "idle"
@@ -498,7 +499,14 @@ class ConversationManager:
                 try:
                     self._on_tool_completed(result)
                 except Exception:
-                    pass
+                    op_id = ""
+                    if isinstance(result.output, dict):
+                        op_id = str(result.output.get("operation_id") or "")
+                    if op_id:
+                        try:
+                            self._tool_executor.mutation_lifecycles.release_reported(op_id)
+                        except Exception:
+                            pass
 
         try:
             temperature = float(self._cfg.get("temperature", 0.7))
@@ -522,6 +530,10 @@ class ConversationManager:
 
         except asyncio.TimeoutError:
             self._approval_gate.cancel_all(turn_id=turn_id)
+            # A timed-out handler may have installed the file before its
+            # result was discarded.  Deliver the ledger's committed outcomes
+            # before finalizing the turn as failed.
+            self._drain_mutation_results(turn_id)
             err_msg = (
                 f"Conversation turn timed out after "
                 f"{self._turn_timeout_seconds:g}s."
@@ -544,6 +556,9 @@ class ConversationManager:
 
         except asyncio.CancelledError:
             self._approval_gate.cancel_all(turn_id=turn_id)
+            # Cancellation never erases an installed file.  Drain committed
+            # lifecycle records so the UI cannot claim nothing was created.
+            self._drain_mutation_results(turn_id)
             with self._lock:
                 was_active = self._active_turn_id == turn_id
                 if was_active:
@@ -645,6 +660,50 @@ class ConversationManager:
         self._notify_state()
         return True
 
+    def _on_late_mutation_result(self, result: ToolResult) -> None:
+        """Deliver committed results that settled after timeout or cancellation."""
+        if self._on_tool_completed is None:
+            return
+        try:
+            self._on_tool_completed(result)
+        except Exception:
+            op_id = ""
+            if isinstance(result.output, dict):
+                op_id = str(result.output.get("operation_id") or "")
+            if op_id:
+                try:
+                    self._tool_executor.mutation_lifecycles.release_reported(op_id)
+                except Exception:
+                    pass
+
+    def _drain_mutation_results(self, turn_id: str = "") -> None:
+        """Emit committed mutation results that never reached the UI.
+
+        Called after cancellation/timeout settlement and during shutdown.  A
+        result is only emitted for operations whose file installation was
+        confirmed by the authoritative lifecycle ledger.
+        """
+        if self._on_tool_completed is None:
+            return
+        try:
+            results = self._tool_executor.drain_unreported_mutation_results(
+                turn_id
+            )
+        except Exception:
+            return
+        for result in results:
+            try:
+                self._on_tool_completed(result)
+            except Exception:
+                op_id = ""
+                if isinstance(result.output, dict):
+                    op_id = str(result.output.get("operation_id") or "")
+                if op_id:
+                    try:
+                        self._tool_executor.mutation_lifecycles.release_reported(op_id)
+                    except Exception:
+                        pass
+
     def _notify_state(self) -> None:
         if self._on_state_change is not None:
             try:
@@ -672,9 +731,49 @@ class ConversationManager:
                 except Exception:
                     pass
         if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            # Cancel every remaining task and let the loop process those
+            # cancellations before stopping it.  Stopping immediately after
+            # ``cancel_active`` would leave the generation task pending and
+            # Python would later report "Task was destroyed but it is pending!".
+            loop = self._loop
+            same_thread = threading.current_thread() is self._loop_thread
+
+            async def _drain_pending_tasks() -> None:
+                current = asyncio.current_task()
+                pending = [
+                    task
+                    for task in asyncio.all_tasks()
+                    if task is not current and not task.done()
+                ]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.wait(pending, timeout=1.0)
+
+            try:
+                drain_future = asyncio.run_coroutine_threadsafe(
+                    _drain_pending_tasks(), loop
+                )
+                if not same_thread:
+                    try:
+                        drain_future.result(timeout=2.5)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            finally:
+                # A file installed during shutdown must still surface as a
+                # committed tool result before the UI/loop disappears.
+                self._drain_mutation_results()
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
         if self._loop_thread and self._loop_thread.is_alive():
             self._loop_thread.join(timeout=2.0)
+        # Drain any committed result that finished while the loop was stopping
+        # or if close() was called when the loop was already stopped.
+        self._drain_mutation_results()
         if hasattr(self._provider, "close"):
             try:
                 # Synchronous close

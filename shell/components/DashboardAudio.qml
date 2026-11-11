@@ -375,6 +375,151 @@ Item {
             }
         }
 
+        // ── Default Microphone (WirePlumber) Control (Stage 12.2) ────────────
+        Rectangle {
+            width: parent.width
+            height: 58
+            radius: 12
+            color: Theme.surfaceSunken
+            border.width: 1
+            border.color: Theme.divider
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 12
+
+                // Icon / State Badge
+                Rectangle {
+                    Layout.preferredWidth: 34
+                    Layout.preferredHeight: 34
+                    radius: 8
+                    color: {
+                        if (!page.online || !page.ipc || !page.ipc.micAvailable) return Theme.surfaceRaised
+                        if (page.ipc.micTransitioning) return Theme.surfaceHover
+                        return (page.ipc.micMuted === true && page.ipc.micVerified) ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.15) : Qt.rgba(Theme.mint.r, Theme.mint.g, Theme.mint.b, 0.15)
+                    }
+                    border.width: 1
+                    border.color: {
+                        if (!page.online || !page.ipc || !page.ipc.micAvailable) return Theme.border
+                        return (page.ipc.micMuted === true && page.ipc.micVerified) ? Theme.danger : Theme.mint
+                    }
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: (page.ipc && page.ipc.micMuted === true && page.ipc.micVerified) ? "🔇" : "🎙️"
+                        font.pixelSize: 14
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 1
+
+                    RowLayout {
+                        spacing: 6
+                        Text {
+                            text: "DEFAULT MICROPHONE"
+                            font.pixelSize: Theme.fontCaption - 1
+                            font.bold: true
+                            color: Theme.textMuted
+                            font.letterSpacing: 0.5
+                        }
+                        Text {
+                            text: {
+                                if (page.ipc && page.ipc.micTransitioning) return "· applying..."
+                                if (!page.online || !page.ipc || !page.ipc.micAvailable) return "· offline"
+                                if (page.ipc.micMuted === true && page.ipc.micVerified) return "· Muted (Verified)"
+                                if (page.ipc.micMuted === false && page.ipc.micVerified) return "· Active (Unmuted)"
+                                return "· " + (page.ipc.micStateString || "unknown")
+                            }
+                            font.pixelSize: Theme.fontCaption - 1
+                            font.bold: true
+                            color: {
+                                if (page.ipc && page.ipc.micTransitioning) return Theme.warning
+                                if (!page.online || !page.ipc || !page.ipc.micAvailable) return Theme.textMuted
+                                return (page.ipc.micMuted === true && page.ipc.micVerified) ? Theme.danger : Theme.mint
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: {
+                            if (!page.ipc || !page.ipc.micAvailable) return "WirePlumber source unavailable"
+                            var name = page.ipc.micSourceDescription || page.ipc.micSourceName
+                            return name + (page.ipc.micSourceId ? (" (Node " + page.ipc.micSourceId + ")") : "")
+                        }
+                        font.pixelSize: Theme.fontBody
+                        color: Theme.textPrimary
+                        font.weight: Font.Medium
+                        elide: Text.ElideRight
+                    }
+                }
+
+                // Action Button (Mute / Unmute / Retry)
+                Rectangle {
+                    Layout.preferredWidth: defaultMicBtnText.implicitWidth + 24
+                    Layout.preferredHeight: 32
+                    radius: 8
+                    color: {
+                        if (defaultMicBtnArea.pressed) return Theme.surfaceRaised
+                        if (defaultMicBtnArea.containsMouse) return Theme.surfaceHover
+                        if (page.ipc && page.ipc.micMuted === true && page.ipc.micVerified) return Theme.mint
+                        return Theme.surfaceRaised
+                    }
+                    border.width: 1
+                    border.color: (page.ipc && page.ipc.micMuted === true && page.ipc.micVerified) ? Theme.mint : Theme.border
+
+                    Text {
+                        id: defaultMicBtnText
+                        anchors.centerIn: parent
+                        text: {
+                            if (page.ipc && page.ipc.micTransitioning) return "..."
+                            if (!page.ipc || !page.ipc.micAvailable || page.ipc.micStateString === "error") return "Retry"
+                            return (page.ipc.micMuted === true && page.ipc.micVerified) ? "Unmute" : "Mute"
+                        }
+                        color: (page.ipc && page.ipc.micMuted === true && page.ipc.micVerified) ? "#000000" : Theme.textPrimary
+                        font.pixelSize: Theme.fontCaption
+                        font.weight: Font.Medium
+                    }
+
+                    MouseArea {
+                        id: defaultMicBtnArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        enabled: page.online && page.ipc && !page.ipc.micTransitioning
+                        onClicked: {
+                            if (!page.ipc) return
+                            if (!page.ipc.micAvailable || page.ipc.micStateString === "error") {
+                                page.ipc.micGetState(function(err, res) {})
+                                return
+                            }
+                            var targetMute = !(page.ipc.micMuted === true && page.ipc.micVerified)
+                            page.ipc.micSetMute(targetMute, function(err, res) {})
+                        }
+                    }
+                }
+            }
+        }
+
+        // PTT Disclaimer note if devices differ or for transparency
+        Text {
+            width: parent.width
+            text: {
+                var defName = (page.ipc && page.ipc.micSourceName) ? page.ipc.micSourceName : ""
+                var selName = page.selectedDeviceName || ""
+                if (defName.length > 0 && selName.length > 0 && !selName.toLowerCase().includes(defName.toLowerCase()) && !defName.toLowerCase().includes(selName.toLowerCase())) {
+                    return "Note: KIVO PTT input (" + selName + ") differs from system default (" + (page.ipc.micSourceDescription || defName) + "). Muting default microphone does not mute PTT capture."
+                }
+                return "Note: Default microphone mute controls the WirePlumber default source. It does not guarantee KIVO PTT or other applications are muted."
+            }
+            font.pixelSize: Theme.fontCaption - 1
+            color: Theme.textMuted
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
+        }
+
         // ── Available Devices List ──────────────────────────────────────────
         Text {
             text: "AVAILABLE MICROPHONES"

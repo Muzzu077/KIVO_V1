@@ -1,0 +1,41 @@
+{
+  "_description": "Stage 13.3.3.3 deterministic desktop-to-Android download test vectors",
+  "_version": "1",
+  "_note": "Synthetic pattern bytes only; no user paths, credentials, or real file contents",
+  "protocol_version": "1",
+  "session_id": "sess_0123456789abcdef",
+  "device_id": "client_download_test",
+  "download_id": "tkt_abababababababababababababababababababababababababababababababab",
+  "shelf_item_id": "shelf_0123456789ab",
+  "chunk_bytes": 1048576,
+  "file_size": 3145745,
+  "pattern": "byte[i] = i % 251",
+  "sha256": "fe2aaf82bfa2ffec207a0c6fa7ce7d4af268d67e2672fdaec675f3f9b65d0854",
+  "total_chunks": 4,
+  "chunk_sha256": [
+    "631b84027d6b9e52b539c4e8373622d23032dfadc64d60af87339c9037e4f769",
+    "729b9155f00261a681000ccd0ff20e750ed3d525b5b1e6fc961837a3bb666fd6",
+    "c85ef98b88946506e2c5488c04b97d86b5ec214add104d4849a3145f5e49fd65",
+    "110451ed998e613ec192a0e80f5682e110082d972980723b67aa3b6971af2f0e"
+  ],
+  "empty_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "endpoints": {
+    "init": "/api/v1/transfers/downloads/init",
+    "status": "/api/v1/transfers/downloads/{download_id}",
+    "chunk": "/api/v1/transfers/downloads/{download_id}/chunks/{chunk_index}",
+    "complete": "/api/v1/transfers/downloads/{download_id}/complete",
+    "cancel": "/api/v1/transfers/downloads/{download_id}/cancel"
+  },
+  "states": [
+    "issued",
+    "claimed",
+    "streaming",
+    "completed"
+  ],
+  "terminal_states": [
+    "expired",
+    "revoked",
+    "failed",
+    "cancelled"
+  ]
+}

@@ -139,6 +139,89 @@ Scope {
     property var toolExecutionLog: []
     property var pendingCommandApproval: null
 
+    // ── Media properties (Stage 12.1 MPRIS) ─────────────────────────────────
+    property var mediaData: null
+    property var mediaLyrics: null
+    readonly property bool mediaActive: mediaData && mediaData.available === true && mediaData.status !== "Unavailable"
+    readonly property bool mediaPlaying: mediaData && mediaData.status === "Playing"
+    readonly property string mediaTitle: _text(mediaData, "title", "")
+    readonly property string mediaArtist: _text(mediaData, "artist", "")
+    readonly property string mediaAlbum: _text(mediaData, "album", "")
+    readonly property string mediaArtUrl: _text(mediaData, "art_url", "")
+    readonly property real mediaPosition: _number(mediaData, "position_seconds", 0)
+    readonly property real mediaDuration: _number(mediaData, "duration_seconds", 0)
+    readonly property string mediaStatus: _text(mediaData, "status", "Unavailable")
+    readonly property string mediaPlayerName: _text(mediaData, "player_name", "")
+    readonly property bool mediaCanSeek: _bool(mediaData, "can_seek", true)
+    readonly property bool mediaLyricsAvailable: _bool(mediaData, "lyrics_available", false)
+
+    // ── Telemetry properties (Stage 12.2) ──────────────────────────────────
+    property var telemetrySnapshot: null
+    property int telemetrySequence: 0
+    property bool telemetryResyncPending: true
+    readonly property bool telemetryLinkStale: telemetryResyncPending || !connected
+    readonly property bool telemetryAvailable: telemetrySnapshot !== null
+    readonly property string telemetryServiceState: _text(telemetrySnapshot, "service_state", "starting")
+
+    readonly property var telemetryCpu: telemetrySnapshot ? telemetrySnapshot.cpu : null
+    readonly property string telemetryCpuStatus: _text(telemetryCpu && telemetryCpu.utilization, "status", "unavailable")
+    readonly property real telemetryCpuPercent: _number(telemetryCpu && telemetryCpu.utilization, "percent", 0.0)
+    readonly property bool telemetryCpuStale: _bool(telemetryCpu && telemetryCpu.utilization, "stale", false)
+    readonly property real telemetryCpuFreqMhz: _number(telemetryCpu && telemetryCpu.frequency, "mhz", 0.0)
+    readonly property real telemetryCpuFreqMaxMhz: _number(telemetryCpu && telemetryCpu.frequency, "max_mhz", 0.0)
+
+    readonly property var telemetryMemory: telemetrySnapshot ? telemetrySnapshot.memory : null
+    readonly property string telemetryMemoryStatus: _text(telemetryMemory, "status", "unavailable")
+    readonly property real telemetryMemoryPercent: _number(telemetryMemory, "percent", 0.0)
+    readonly property real telemetryMemoryUsedBytes: _number(telemetryMemory, "used_bytes", 0)
+    readonly property real telemetryMemoryTotalBytes: _number(telemetryMemory, "total_bytes", 0)
+    readonly property bool telemetryMemoryStale: _bool(telemetryMemory, "stale", false)
+
+    readonly property var telemetryGpu: telemetrySnapshot ? telemetrySnapshot.gpu : null
+    readonly property string telemetryGpuStatus: _text(telemetryGpu, "status", "unavailable")
+    readonly property string telemetryGpuName: _text(telemetryGpu, "name", "")
+    readonly property real telemetryGpuPercent: _number(telemetryGpu, "utilization_percent", 0.0)
+    readonly property real telemetryGpuTempC: _number(telemetryGpu, "temperature_c", 0.0)
+    readonly property real telemetryGpuMemUsedBytes: _number(telemetryGpu, "memory_used_bytes", 0)
+    readonly property real telemetryGpuMemTotalBytes: _number(telemetryGpu, "memory_total_bytes", 0)
+    readonly property real telemetryGpuMemPercent: _number(telemetryGpu, "memory_percent", 0.0)
+    readonly property bool telemetryGpuStale: _bool(telemetryGpu, "stale", false)
+
+    readonly property var telemetryTemperatures: telemetrySnapshot && Array.isArray(telemetrySnapshot.temperatures) ? telemetrySnapshot.temperatures : []
+
+    readonly property var telemetryBattery: telemetrySnapshot ? telemetrySnapshot.battery : null
+    readonly property string telemetryBatteryStatus: _text(telemetryBattery, "status", "unavailable")
+    readonly property bool telemetryBatteryPresent: _bool(telemetryBattery, "present", false)
+    readonly property int telemetryBatteryPercent: _number(telemetryBattery, "percent", 0)
+    readonly property string telemetryBatteryState: _text(telemetryBattery, "state", "unknown")
+    readonly property var telemetryBatteryAcOnline: telemetryBattery && typeof telemetryBattery.ac_online === "boolean" ? telemetryBattery.ac_online : null
+    readonly property bool telemetryBatteryStale: _bool(telemetryBattery, "stale", false)
+
+    readonly property var telemetryStorage: telemetrySnapshot ? telemetrySnapshot.storage : null
+    readonly property string telemetryStorageStatus: _text(telemetryStorage, "status", "unavailable")
+    readonly property real telemetryStoragePercent: _number(telemetryStorage, "percent", 0.0)
+    readonly property real telemetryStorageUsedBytes: _number(telemetryStorage, "used_bytes", 0)
+    readonly property real telemetryStorageTotalBytes: _number(telemetryStorage, "total_bytes", 0)
+    readonly property bool telemetryStorageStale: _bool(telemetryStorage, "stale", false)
+
+    // ── Microphone properties (Stage 12.2 Default Mic Mute) ────────────────
+    property var micState: null
+    property int micRevision: 0
+    property bool micResyncPending: true
+    property bool micTransitioning: false
+    readonly property bool micLinkStale: micResyncPending || !connected
+    readonly property bool micAvailable: micState !== null
+    readonly property string micStateString: _text(micState, "state", "unavailable")
+    readonly property var micMuted: micState && typeof micState.muted === "boolean" ? micState.muted : null
+    readonly property bool micVerified: _bool(micState, "verified", false)
+    readonly property var micSource: micState ? micState.source : null
+    readonly property string micSourceName: _text(micSource, "name", "")
+    readonly property string micSourceDescription: _text(micSource, "description", "Default microphone")
+    readonly property int micSourceId: _number(micSource, "id", 0)
+    readonly property string micErrorCode: _text(micState, "error_code", "")
+    readonly property string micErrorMessage: _text(micState, "error_message", "")
+    readonly property bool micStale: _bool(micState, "stale", false)
+
     // ── Signals ────────────────────────────────────────────────────────────
     signal statusUpdated()
     signal taskUpdated()
@@ -170,6 +253,10 @@ Scope {
     signal agentToolCompleted(var result)
     signal commandApprovalRequested(var request)
     signal commandApprovalResolved(var result)
+    signal mediaPlaybackUpdated(var data)
+    signal mediaLyricsUpdated(var data)
+    signal telemetryUpdated(var snapshot)
+    signal micStateUpdated(var state)
 
     // ── Internal state ─────────────────────────────────────────────────────
     property bool _wantConnected: false
@@ -331,6 +418,11 @@ Scope {
         lastSequence = 0
         sequenceGaps = 0
         staleEvents = 0
+        telemetrySequence = 0
+        micRevision = 0
+        telemetryResyncPending = true
+        micResyncPending = true
+        micTransitioning = false
         _setConnectionState("connected")
 
         // The order is intentional: refresh authoritative state first, then
@@ -353,6 +445,8 @@ Scope {
             if (!_applyTaskResult(result))
                 _invalid("get_current_task returned an invalid result")
         })
+        telemetryGetSnapshot()
+        micGetState()
         _subscribe()
     }
 
@@ -363,6 +457,9 @@ Scope {
         stale = true
         cancelling = false
         _cancelRequestId = ""
+        telemetryResyncPending = true
+        micResyncPending = true
+        micTransitioning = false
         cancelTimeout.stop()
         if (wasConnected) {
             lastError = "Connection to the KIVO backend was lost."
@@ -540,6 +637,9 @@ Scope {
             }
             if (_isObject(payload) && Array.isArray(payload.conversation_history)) {
                 conversationHistory = payload.conversation_history
+            }
+            if (_isObject(payload) && _isObject(payload.media)) {
+                mediaData = payload.media
             }
             if (typeof callback === "function")
                 callback(null, payload)
@@ -745,6 +845,100 @@ Scope {
                     pendingCommandApproval = result.pending[0]
                 else
                     pendingCommandApproval = null
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    // ── Media controls (Stage 12.1 MPRIS) ──────────────────────────────────
+    function mediaGetStatus(callback) {
+        return request("media_get_status", null, function(error, result) {
+            if (!error && _isObject(result))
+                mediaData = _copy(result)
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function mediaPlay(callback) {
+        return request("media_play", null, callback)
+    }
+
+    function mediaPause(callback) {
+        return request("media_pause", null, callback)
+    }
+
+    function mediaPlayPause(callback) {
+        return request("media_play_pause", null, callback)
+    }
+
+    function mediaNext(callback) {
+        return request("media_next", null, callback)
+    }
+
+    function mediaPrevious(callback) {
+        return request("media_previous", null, callback)
+    }
+
+    function mediaSeek(positionSeconds, callback) {
+        return request("media_seek", { "position_seconds": Number(positionSeconds) }, callback)
+    }
+
+    function mediaGetLyrics(callback) {
+        return request("media_get_lyrics", null, function(error, result) {
+            if (!error && _isObject(result))
+                mediaLyrics = _copy(result)
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    // ── Telemetry & Microphone controls (Stage 12.2) ───────────────────────
+    function telemetryGetSnapshot(callback) {
+        return request("telemetry_get_snapshot", null, function(error, result) {
+            if (!error && _isObject(result)) {
+                var seq = _number(result, "sequence", 0)
+                if (seq >= telemetrySequence || telemetryResyncPending) {
+                    telemetrySnapshot = _copy(result)
+                    telemetrySequence = seq
+                    telemetryResyncPending = false
+                    telemetryUpdated(telemetrySnapshot)
+                }
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function micGetState(callback) {
+        return request("mic_get_state", null, function(error, result) {
+            if (!error && _isObject(result)) {
+                var rev = _number(result, "revision", 0)
+                if (rev >= micRevision || micResyncPending) {
+                    micState = _copy(result)
+                    micRevision = rev
+                    micResyncPending = false
+                    micTransitioning = false
+                    micStateUpdated(micState)
+                }
+            }
+            if (typeof callback === "function")
+                callback(error, result)
+        })
+    }
+
+    function micSetMute(muted, callback) {
+        micTransitioning = true
+        return request("mic_set_mute", { "muted": muted === true }, function(error, result) {
+            micTransitioning = false
+            if (!error && _isObject(result)) {
+                if (_isObject(result.state)) {
+                    micState = _copy(result.state)
+                    micRevision = _number(result.state, "revision", micRevision)
+                    micResyncPending = false
+                    micStateUpdated(micState)
+                }
             }
             if (typeof callback === "function")
                 callback(error, result)
@@ -1006,6 +1200,43 @@ Scope {
                 pendingCommandApproval = null
             commandApprovalResolved(data)
             break
+        case "media_status_changed":
+            if (_isObject(data)) {
+                mediaData = _copy(data)
+                mediaPlaybackUpdated(mediaData)
+            }
+            break
+        case "media_lyrics_loaded":
+            if (_isObject(data)) {
+                mediaLyrics = _copy(data)
+                mediaLyricsUpdated(mediaLyrics)
+            }
+            break
+        case "telemetry_snapshot_changed":
+        case "telemetry.snapshot_changed":
+            if (_isObject(data)) {
+                var tseq = _number(data, "sequence", 0)
+                if (tseq >= telemetrySequence || telemetryResyncPending) {
+                    telemetrySnapshot = _copy(data)
+                    telemetrySequence = tseq
+                    telemetryResyncPending = false
+                    telemetryUpdated(telemetrySnapshot)
+                }
+            }
+            break
+        case "mic_state_changed":
+        case "mic.state_changed":
+            if (_isObject(data)) {
+                var mrev = _number(data, "revision", 0)
+                if (mrev >= micRevision || micResyncPending) {
+                    micState = _copy(data)
+                    micRevision = mrev
+                    micResyncPending = false
+                    micTransitioning = false
+                    micStateUpdated(micState)
+                }
+            }
+            break
         case "confirmation_required":
             // The backend confirmation gate is intentionally unbound.  Do not
             // render an approval control in this milestone.
@@ -1036,6 +1267,27 @@ Scope {
         status = _copy(result)
         activeTask = result.active_task === true
         drive = _isObject(result.drive) ? _copy(result.drive) : _copy(_emptyDrive)
+        if (_isObject(result.media))
+            mediaData = _copy(result.media)
+        if (_isObject(result.telemetry)) {
+            var tseq2 = _number(result.telemetry, "sequence", 0)
+            if (tseq2 >= telemetrySequence || telemetryResyncPending) {
+                telemetrySnapshot = _copy(result.telemetry)
+                telemetrySequence = tseq2
+                telemetryResyncPending = false
+                telemetryUpdated(telemetrySnapshot)
+            }
+        }
+        if (_isObject(result.microphone)) {
+            var mrev2 = _number(result.microphone, "revision", 0)
+            if (mrev2 >= micRevision || micResyncPending) {
+                micState = _copy(result.microphone)
+                micRevision = mrev2
+                micResyncPending = false
+                micTransitioning = false
+                micStateUpdated(micState)
+            }
+        }
         stale = false
         statusUpdated()
         driveUpdated()

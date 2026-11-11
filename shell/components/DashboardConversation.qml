@@ -27,6 +27,59 @@ Item {
     property bool discoveringModels: false
     property bool showModelPicker: false
 
+    // ── Approval card state ────────────────────────────────────────────────
+    readonly property var pendingApproval: ipc ? ipc.pendingCommandApproval : null
+    readonly property bool mutationApproval: pendingApproval !== null
+        && pendingApproval.approval_kind === "filesystem_mutation"
+    readonly property var approvalDetails: pendingApproval && pendingApproval.details
+        ? pendingApproval.details : null
+    property real approvalNow: Date.now() / 1000
+    readonly property int approvalSecondsRemaining: {
+        if (!pendingApproval || typeof pendingApproval.expires_at !== "number")
+            return 0
+        return Math.max(0, Math.ceil(pendingApproval.expires_at - approvalNow))
+    }
+    readonly property bool approvalExpired: pendingApproval !== null
+        && approvalSecondsRemaining <= 0
+
+    function approvalHeading() {
+        return mutationApproval
+            ? "FILESYSTEM MUTATION APPROVAL REQUIRED"
+            : "TERMINAL COMMAND APPROVAL REQUIRED"
+    }
+
+    function approvalCountdown() {
+        if (!pendingApproval)
+            return ""
+        if (approvalExpired)
+            return "Expired"
+        return "Expires in ~" + approvalSecondsRemaining + "s"
+    }
+
+    function approvalSummaryText() {
+        if (!pendingApproval)
+            return ""
+        if (mutationApproval && approvalDetails && approvalDetails.summary)
+            return approvalDetails.summary
+        return pendingApproval.reason || ""
+    }
+
+    function approvalDetailValue(key, fallback) {
+        if (!approvalDetails || approvalDetails[key] === undefined
+                || approvalDetails[key] === null)
+            return fallback
+        return approvalDetails[key]
+    }
+
+    onPendingApprovalChanged: approvalNow = Date.now() / 1000
+
+    Timer {
+        interval: 500
+        repeat: true
+        running: page.pendingApproval !== null
+        onTriggered: page.approvalNow = Date.now() / 1000
+    }
+
     function refreshConversation() {
         if (!online)
             return
@@ -489,7 +542,7 @@ Item {
             id: approvalCard
             width: parent.width
             height: approvalCol.implicitHeight + 16
-            visible: page.ipc && page.ipc.pendingCommandApproval !== null
+            visible: page.pendingApproval !== null
             radius: 10
             color: Qt.rgba(Theme.warning.r, Theme.warning.g, Theme.warning.b, 0.12)
             border.width: 1
@@ -516,7 +569,7 @@ Item {
                             color: Theme.warning
                         }
                         Text {
-                            text: "TERMINAL COMMAND APPROVAL REQUIRED"
+                            text: page.approvalHeading()
                             font.pixelSize: Theme.fontCaption
                             font.bold: true
                             color: Theme.warning
@@ -526,60 +579,150 @@ Item {
                     Item { Layout.fillWidth: true }
 
                     Text {
-                        text: "Expires in ~60s"
+                        text: page.approvalCountdown()
                         font.pixelSize: Theme.fontCaption - 1
-                        color: Theme.textMuted
+                        color: page.approvalExpired ? Theme.warning : Theme.textMuted
                     }
                 }
 
                 Text {
                     width: parent.width
-                    text: page.ipc && page.ipc.pendingCommandApproval ? page.ipc.pendingCommandApproval.reason : ""
+                    text: page.approvalSummaryText()
                     font.pixelSize: Theme.fontBody
                     color: Theme.textPrimary
                     wrapMode: Text.WordWrap
                 }
 
-                // Command details box
+                // Approval details box
                 Rectangle {
                     width: parent.width
-                    height: cmdDetailsCol.implicitHeight + 12
+                    height: approvalDetailsCol.implicitHeight + 12
                     radius: 6
                     color: Theme.surfaceSunken
                     border.width: 1
                     border.color: Theme.border
 
                     Column {
-                        id: cmdDetailsCol
+                        id: approvalDetailsCol
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.top: parent.top
                         anchors.margins: 8
                         spacing: 3
 
-                        Text {
-                            text: "Command: " + (page.ipc && page.ipc.pendingCommandApproval ? (page.ipc.pendingCommandApproval.command + " " + page.ipc.pendingCommandApproval.arguments.join(" ")) : "")
-                            font.family: Theme.monoFamily
-                            font.pixelSize: Theme.fontCaption
-                            font.bold: true
-                            color: Theme.mint
-                            elide: Text.ElideRight
+                        // Mutation-specific, UI-safe fields.  The backend
+                        // never sends an absolute root, filesystem identity,
+                        // approval token, or grant in these details.
+                        Column {
                             width: parent.width
+                            spacing: 3
+                            visible: page.mutationApproval
+
+                            Text {
+                                text: "Operation: " + page.approvalDetailValue("title", "Create text file")
+                                font.family: Theme.monoFamily
+                                font.pixelSize: Theme.fontCaption
+                                font.bold: true
+                                color: Theme.mint
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+
+                            Text {
+                                text: "Workspace: " + page.approvalDetailValue("workspace_id", "")
+                                font.family: Theme.monoFamily
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textMuted
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+
+                            Text {
+                                text: "Destination: " + page.approvalDetailValue("relative_path", "")
+                                font.family: Theme.monoFamily
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textMuted
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+
+                            Text {
+                                text: "Size: " + page.approvalDetailValue("byte_count", 0) + " bytes"
+                                font.family: Theme.monoFamily
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textMuted
+                            }
+
+                            Text {
+                                visible: page.approvalDetailValue("preview", "").length > 0
+                                text: "Preview: " + page.approvalDetailValue("preview", "")
+                                font.family: Theme.monoFamily
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textSecondary
+                                wrapMode: Text.WrapAnywhere
+                                maximumLineCount: 3
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+
+                            Text {
+                                text: "Preview: (empty file)"
+                                visible: page.approvalDetailValue("preview", "").length === 0
+                                font.family: Theme.monoFamily
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textSecondary
+                            }
+
+                            Text {
+                                visible: page.approvalDetailValue("no_overwrite", false) === true
+                                text: "No overwrite: existing files are never replaced."
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textSecondary
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                            }
+
+                            Text {
+                                visible: page.approvalDetailValue("notice", "").length > 0
+                                text: page.approvalDetailValue("notice", "")
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textSecondary
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                            }
                         }
 
-                        Text {
-                            text: "Directory: " + (page.ipc && page.ipc.pendingCommandApproval ? page.ipc.pendingCommandApproval.working_directory : "")
-                            font.family: Theme.monoFamily
-                            font.pixelSize: Theme.fontCaption - 1
-                            color: Theme.textMuted
-                            elide: Text.ElideRight
+                        // Terminal-command approval details remain unchanged
+                        // for backward compatibility.
+                        Column {
                             width: parent.width
-                        }
+                            spacing: 3
+                            visible: !page.mutationApproval
 
-                        Text {
-                            text: "⚠️ Output will be shared with your configured AI provider."
-                            font.pixelSize: Theme.fontCaption - 1
-                            color: Theme.textSecondary
+                            Text {
+                                text: "Command: " + (page.pendingApproval ? (page.pendingApproval.command + " " + page.pendingApproval.arguments.join(" ")) : "")
+                                font.family: Theme.monoFamily
+                                font.pixelSize: Theme.fontCaption
+                                font.bold: true
+                                color: Theme.mint
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+
+                            Text {
+                                text: "Directory: " + (page.pendingApproval ? page.pendingApproval.working_directory : "")
+                                font.family: Theme.monoFamily
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textMuted
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+
+                            Text {
+                                text: "⚠️ Output will be shared with your configured AI provider."
+                                font.pixelSize: Theme.fontCaption - 1
+                                color: Theme.textSecondary
+                            }
                         }
                     }
                 }
@@ -599,6 +742,7 @@ Item {
                         color: Theme.surfaceRaised
                         border.width: 1
                         border.color: Theme.border
+                        opacity: page.approvalExpired ? 0.5 : 1.0
 
                         Text {
                             anchors.centerIn: parent
@@ -609,9 +753,10 @@ Item {
 
                         MouseArea {
                             anchors.fill: parent
+                            enabled: !page.approvalExpired
                             onClicked: {
-                                if (page.ipc && page.ipc.pendingCommandApproval) {
-                                    page.ipc.commandResolveApproval(page.ipc.pendingCommandApproval.token, false, page.ipc.pendingCommandApproval.turn_id, page.ipc.pendingCommandApproval.tool_call_id, null)
+                                if (page.pendingApproval) {
+                                    page.ipc.commandResolveApproval(page.pendingApproval.token, false, page.pendingApproval.turn_id, page.pendingApproval.tool_call_id, null)
                                 }
                             }
                         }
@@ -619,16 +764,17 @@ Item {
 
                     // Approve Button
                     Rectangle {
-                        Layout.preferredWidth: 120
+                        Layout.preferredWidth: page.mutationApproval ? 130 : 120
                         Layout.preferredHeight: 28
                         radius: 6
                         color: Theme.accent
                         border.width: 1
                         border.color: Theme.accentStrong
+                        opacity: page.approvalExpired ? 0.5 : 1.0
 
                         Text {
                             anchors.centerIn: parent
-                            text: "Approve & Run"
+                            text: page.mutationApproval ? "Approve & Create" : "Approve & Run"
                             font.pixelSize: Theme.fontCaption
                             font.bold: true
                             color: "#000000"
@@ -636,9 +782,10 @@ Item {
 
                         MouseArea {
                             anchors.fill: parent
+                            enabled: !page.approvalExpired
                             onClicked: {
-                                if (page.ipc && page.ipc.pendingCommandApproval) {
-                                    page.ipc.commandResolveApproval(page.ipc.pendingCommandApproval.token, true, page.ipc.pendingCommandApproval.turn_id, page.ipc.pendingCommandApproval.tool_call_id, null)
+                                if (page.pendingApproval) {
+                                    page.ipc.commandResolveApproval(page.pendingApproval.token, true, page.pendingApproval.turn_id, page.pendingApproval.tool_call_id, null)
                                 }
                             }
                         }
@@ -696,7 +843,7 @@ Item {
         // ── Message Thread (ListView) ───────────────────────────────────────
         Rectangle {
             width: parent.width
-            height: page.showModelPicker ? 180 : ((page.ipc && page.ipc.pendingCommandApproval) ? 220 : 310)
+            height: page.showModelPicker ? 180 : (page.pendingApproval !== null ? 220 : 310)
             radius: 12
             color: Theme.surfaceSunken
             border.width: 1

@@ -30,6 +30,22 @@ from kivo.agent.approval_context import (
 
 MUTATION_AUDIT_STATUSES = frozenset(
     {
+        "approved",
+        "execution_started",
+        "committed",
+        "verification_succeeded",
+        "verification_failed",
+        "durability_synced",
+        "durability_failed",
+        "durability_unknown",
+        "audit_warning",
+        "cancelled_after_commit",
+        "timed_out_after_commit",
+        "outcome_unknown",
+        "approval_rejected",
+        "approval_expired",
+        "approval_cancelled",
+        "approval_error",
         "intent",
         "executed",
         "failed",
@@ -44,22 +60,27 @@ MUTATION_AUDIT_STATUSES = frozenset(
         "budget_exhausted",
         "preflight_failed",
         "validation_failed",
-        "approval_error",
         "too_many_pending",
     }
 )
 
 _ALLOWED_DETAIL_KEYS = frozenset(
     {
+        "operation_id",
         "workspace_id",
         "relative_path",
         "content_digest",
         "byte_count",
+        "committed",
+        "verified",
+        "durability",
     }
 )
 
 _WORKSPACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")
+_DURABILITY_STATES = frozenset({"unknown", "synced", "failed"})
 
 
 def _validate_status(status: str) -> str:
@@ -73,10 +94,14 @@ def _validate_status(status: str) -> str:
 
 def _metadata(
     *,
+    operation_id: str = "",
     workspace_id: str = "",
     relative_path: str = "",
     content_digest: str = "",
     byte_count: Optional[int] = None,
+    committed: Optional[bool] = None,
+    verified: Optional[bool] = None,
+    durability: str = "",
 ) -> dict[str, Any]:
     """Build a strict, allowlisted metadata dictionary.
 
@@ -84,6 +109,12 @@ def _metadata(
     normally pass values already canonicalized by ``ApprovalContext``.
     """
     parameters: dict[str, Any] = {}
+    if operation_id:
+        if not isinstance(operation_id, str) or not _OPERATION_ID.fullmatch(
+            operation_id
+        ):
+            raise ValueError("Invalid operation identifier for audit.")
+        parameters["operation_id"] = operation_id
     if workspace_id:
         if not isinstance(workspace_id, str) or not _WORKSPACE_ID.fullmatch(
             workspace_id
@@ -112,6 +143,18 @@ def _metadata(
         ):
             raise ValueError("Invalid byte count for audit.")
         parameters["byte_count"] = byte_count
+    if committed is not None:
+        if not isinstance(committed, bool):
+            raise ValueError("Invalid committed flag for audit.")
+        parameters["committed"] = committed
+    if verified is not None:
+        if not isinstance(verified, bool):
+            raise ValueError("Invalid verified flag for audit.")
+        parameters["verified"] = verified
+    if durability:
+        if not isinstance(durability, str) or durability not in _DURABILITY_STATES:
+            raise ValueError("Invalid durability state for audit.")
+        parameters["durability"] = durability
     if not set(parameters).issubset(_ALLOWED_DETAIL_KEYS):
         raise ValueError("Mutation audit metadata contains disallowed keys.")
     return parameters
@@ -167,10 +210,14 @@ def record_mutation_event(
     status: str,
     turn_id: str,
     tool_call_id: str,
+    operation_id: str = "",
     workspace_id: str = "",
     relative_path: str = "",
     content_digest: str = "",
     byte_count: Optional[int] = None,
+    committed: Optional[bool] = None,
+    verified: Optional[bool] = None,
+    durability: str = "",
     duration: float = 0.0,
 ) -> bool:
     """Record one metadata-only mutation lifecycle event.
@@ -179,10 +226,14 @@ def record_mutation_event(
     """
     try:
         parameters = _metadata(
+            operation_id=operation_id,
             workspace_id=workspace_id,
             relative_path=relative_path,
             content_digest=content_digest,
             byte_count=byte_count,
+            committed=committed,
+            verified=verified,
+            durability=durability,
         )
         return _record(
             tool_name=tool_name,
@@ -211,6 +262,7 @@ def record_mutation_intent(
         status="intent",
         turn_id=context.turn_id,
         tool_call_id=context.tool_call_id,
+        operation_id=context.operation_id,
         workspace_id=context.binding.workspace_id,
         relative_path=context.binding.relative_path,
         content_digest=context.binding.content_digest,
@@ -234,6 +286,7 @@ def record_mutation_outcome(
         status=status,
         turn_id=context.turn_id,
         tool_call_id=context.tool_call_id,
+        operation_id=context.operation_id,
         workspace_id=context.binding.workspace_id,
         relative_path=context.binding.relative_path,
         content_digest=context.binding.content_digest,

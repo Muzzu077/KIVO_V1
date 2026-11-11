@@ -143,6 +143,19 @@ Item {
     readonly property bool transientIconVisible: visualState === "success"
         || visualState === "error" || visualState === "cancelled"
 
+    readonly property bool compactCpuVisible: notch.visualState === "idle"
+        && notch.ipc && notch.ipc.telemetryAvailable
+        && notch.ipc.telemetryCpuStatus === "ok"
+        && !notch.ipc.telemetryCpuStale
+        && !notch.ipc.telemetryLinkStale
+        && !notch.ipc.mediaActive
+
+    readonly property bool compactMicMutedVisible: notch.ipc
+        && notch.ipc.micStateString === "muted"
+        && notch.ipc.micVerified === true
+        && !notch.ipc.micStale
+        && !notch.ipc.micLinkStale
+
     readonly property color stateAccent: {
         switch (visualState) {
         case "listening": return notch.audioState === "capturing" ? Theme.danger : Theme.mint
@@ -215,7 +228,11 @@ Item {
         case "stopping": return "Stopping"
         case "offline": return "Reconnecting"
         case "syncing": return "Syncing"
-        default: return "Ready"
+        default: {
+            if (notch.ipc && notch.ipc.mediaPlaying && notch.ipc.mediaTitle)
+                return "♫ " + notch.ipc.mediaTitle + (notch.ipc.mediaArtist ? (" — " + notch.ipc.mediaArtist) : "")
+            return "Ready"
+        }
         }
     }
 
@@ -231,24 +248,40 @@ Item {
         case "stopping": return 226
         case "offline": return 218
         case "syncing": return 196
-        default: return 176
+        default: {
+            if (notch.ipc && notch.ipc.mediaPlaying && notch.ipc.mediaTitle)
+                return 280
+            var w = 176
+            if (notch.compactCpuVisible)
+                w = 232
+            if (notch.compactMicMutedVisible)
+                w += 28
+            return w
+        }
         }
     }
 
     readonly property int expandedHeight: {
+        var base = 212
         switch (visualState) {
-        case "driving": return 302
-        case "stopping": return 302
-        case "error": return 252
-        case "listening": return 252
-        case "speaking": return 252
-        case "thinking": return 224
-        case "success": return 222
-        case "cancelled": return 222
-        case "offline": return 224
-        case "syncing": return 224
-        default: return 212
+        case "driving": base = 302; break
+        case "stopping": base = 302; break
+        case "error": base = 252; break
+        case "listening": base = 252; break
+        case "speaking": base = 252; break
+        case "thinking": base = 224; break
+        case "success": base = 222; break
+        case "cancelled": base = 222; break
+        case "offline": base = 224; break
+        case "syncing": base = 224; break
+        default: base = 212; break
         }
+        if (notch.ipc && notch.ipc.mediaActive) {
+            base += (mediaDrawer && mediaDrawer.showLyrics ? 200 : 78)
+        } else if (notch.visualState === "idle" || notch.visualState === "offline" || notch.visualState === "syncing") {
+            base += 134
+        }
+        return base
     }
 
     readonly property int motionDuration: reducedMotion ? 0 : Theme.durationNormal
@@ -997,6 +1030,46 @@ Item {
                     onClicked: notch.requestStop()
                 }
 
+                Rectangle {
+                    id: compactCpuChip
+                    Layout.preferredWidth: visible ? cpuBadgeText.implicitWidth + 10 : 0
+                    Layout.preferredHeight: 16
+                    Layout.alignment: Qt.AlignVCenter
+                    visible: notch.compactCpuVisible
+                    radius: 4
+                    color: Theme.surfaceHover
+                    border.color: Theme.border
+                    border.width: 1
+
+                    Text {
+                        id: cpuBadgeText
+                        anchors.centerIn: parent
+                        text: "CPU " + Math.round(notch.ipc ? notch.ipc.telemetryCpuPercent : 0) + "%"
+                        font.family: Theme.monoFamily
+                        font.pixelSize: 9
+                        font.weight: Font.Medium
+                        color: Theme.textSecondary
+                    }
+                }
+
+                Rectangle {
+                    id: compactMicChip
+                    Layout.preferredWidth: visible ? 20 : 0
+                    Layout.preferredHeight: 16
+                    Layout.alignment: Qt.AlignVCenter
+                    visible: notch.compactMicMutedVisible
+                    radius: 4
+                    color: Theme.surfaceSunken
+                    border.color: Theme.danger
+                    border.width: 1
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "🔇"
+                        font.pixelSize: 9
+                    }
+                }
+
                 StatusIndicator {
                     Layout.preferredWidth: 8
                     Layout.preferredHeight: 8
@@ -1260,6 +1333,33 @@ Item {
                         maximumLineCount: 2
                         elide: Text.ElideRight
                     }
+                }
+
+                // ── Media Playback & Lyrics Drawer (Stage 12.1 MPRIS) ────────
+                NotchMediaDrawer {
+                    id: mediaDrawer
+                    width: parent.width
+                    ipc: notch.ipc
+                    reducedMotion: notch.reducedMotion
+                    visible: notch.ipc && notch.ipc.mediaActive
+                }
+
+                // ── Hardware Telemetry Summary (Stage 12.2) ───────────────────
+                TelemetrySummary {
+                    width: parent.width
+                    ipc: notch.ipc
+                    reducedMotion: notch.reducedMotion
+                    visible: (!notch.ipc || !notch.ipc.mediaActive)
+                        && notch.visualState !== "driving"
+                        && notch.visualState !== "stopping"
+                }
+
+                // ── Default Microphone Mute Control (Stage 12.2) ──────────────
+                MicControlRow {
+                    width: parent.width
+                    ipc: notch.ipc
+                    reducedMotion: notch.reducedMotion
+                    visible: notch.visualState !== "driving" && notch.visualState !== "stopping"
                 }
 
                 // ── Push-to-Talk audio capture control ────────────────────────────────

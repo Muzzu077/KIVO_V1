@@ -8,10 +8,11 @@ conversation turn and tool call.
 Security boundaries
 -------------------
 * The public representation (``to_dict`` / ``to_json``) contains only bounded,
-  UI-safe display data and the canonical fingerprint.  The private binding
-  (workspace root identity, parent-directory identity, and the full binding
-  payload) is retained in memory for the handler and is never serialized for
-  IPC or the model.
+  UI-safe display data.  The canonical fingerprint is private proof material
+  retained in memory for the handler and is never serialized for IPC, the
+  approval UI, or the model.  The private binding (workspace root identity,
+  parent-directory identity, and the full binding payload) is likewise never
+  serialized.
 * The fingerprint is computed by the executor from its own trusted call and
   turn identifiers.  Model-supplied fingerprints are never accepted.
 * Every nested value is immutable.  The binding is a frozen dataclass with
@@ -34,6 +35,8 @@ APPROVAL_CONTEXT_VERSION = 1
 MAX_APPROVAL_CONTEXT_BYTES = 8_192
 MAX_APPROVAL_DISPLAY_TITLE_CHARS = 120
 MAX_APPROVAL_DISPLAY_SUMMARY_CHARS = 400
+MAX_APPROVAL_DISPLAY_PREVIEW_CHARS = 240
+MAX_APPROVAL_DISPLAY_NOTICE_CHARS = 240
 MAX_RELATIVE_PATH_CHARS = 512
 MAX_COMPONENT_BYTES = 255
 MAX_IDENTITY_CHARS = 128
@@ -87,6 +90,31 @@ def _safe_text(
     if _has_control(clean):
         raise ApprovalContextError(f"{name} contains control characters.")
     return clean
+
+
+def _safe_preview(value: Any, *, name: str, max_chars: int) -> str:
+    """Return a single-line, control-free, size-bounded content preview."""
+    if not isinstance(value, str):
+        raise ApprovalContextError(f"{name} must be a string.")
+    clean = unicodedata.normalize("NFC", value)
+    pieces: list[str] = []
+    for char in clean:
+        code = ord(char)
+        if char in "\r\n\t":
+            pieces.append(" ")
+            continue
+        if (
+            code < 32
+            or code == 127
+            or 0x7F <= code <= 0x9F
+            or code in _BIDI_CONTROLS
+        ):
+            continue
+        pieces.append(char)
+    bounded = " ".join("".join(pieces).split())
+    if len(bounded) > max_chars:
+        bounded = bounded[: max(0, max_chars - 3)].rstrip() + "..."
+    return bounded
 
 
 def canonicalize_relative_path(value: Any) -> str:
@@ -263,6 +291,8 @@ class ApprovalDisplay:
 
     title: str
     summary: str = ""
+    preview: str = ""
+    notice: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -284,19 +314,47 @@ class ApprovalDisplay:
                 allow_empty=True,
             ),
         )
+        object.__setattr__(
+            self,
+            "preview",
+            _safe_preview(
+                self.preview,
+                name="display.preview",
+                max_chars=MAX_APPROVAL_DISPLAY_PREVIEW_CHARS,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "notice",
+            _safe_text(
+                self.notice,
+                name="display.notice",
+                max_chars=MAX_APPROVAL_DISPLAY_NOTICE_CHARS,
+                allow_empty=True,
+            ),
+        )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ApprovalDisplay":
         if not isinstance(value, Mapping):
             raise ApprovalContextError("Approval display must be a mapping or instance.")
-        extra = [key for key in value if key not in ("title", "summary")]
+        extra = [
+            key
+            for key in value
+            if key not in ("title", "summary", "preview", "notice")
+        ]
         if extra:
             raise ApprovalContextError(
                 "Approval display contains unexpected fields: " + ", ".join(extra)
             )
         if "title" not in value:
             raise ApprovalContextError("Approval display is missing a title.")
-        return cls(title=value["title"], summary=value.get("summary", ""))
+        return cls(
+            title=value["title"],
+            summary=value.get("summary", ""),
+            preview=value.get("preview", ""),
+            notice=value.get("notice", ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -406,17 +464,26 @@ class ApprovalContext:
     def version(self) -> int:
         return self.context_version
 
+    @property
+    def operation_id(self) -> str:
+        """Stable, non-secret correlation ID for one approved operation."""
+        return hashlib.sha256(
+            ("kivo-mutation-op:" + self.fingerprint).encode("utf-8")
+        ).hexdigest()[:32]
+
     def _public_payload(self) -> dict[str, Any]:
         return {
             "context_version": self.context_version,
+            "operation_id": self.operation_id,
             "operation_kind": self.operation_kind,
             "tool_name": self.tool_name,
             "turn_id": self.turn_id,
             "tool_call_id": self.tool_call_id,
-            "fingerprint": self.fingerprint,
             "display": {
                 "title": self.display.title,
                 "summary": self.display.summary,
+                "preview": self.display.preview,
+                "notice": self.display.notice,
             },
         }
 
@@ -449,18 +516,24 @@ class ApprovalContext:
     def to_approval_details(self) -> dict[str, Any]:
         """Bounded metadata for an approval card.
 
-        Root identity, parent identity, file contents, and approval tokens are
-        deliberately excluded.
+        Root identity, parent identity, the approval fingerprint, approval
+        tokens, grants, file contents, and absolute roots are deliberately
+        excluded.  Only the display-safe operation description remains.
         """
         return {
             "context_version": self.context_version,
+            "operation_id": self.operation_id,
             "operation_kind": self.operation_kind,
             "workspace_id": self.binding.workspace_id,
             "relative_path": self.binding.relative_path or ".",
             "content_digest": self.binding.content_digest,
             "byte_count": self.binding.byte_count,
             "target_state": self.binding.target_state,
-            "approval_fingerprint": self.fingerprint,
+            "title": self.display.title,
+            "summary": self.display.summary,
+            "preview": self.display.preview,
+            "notice": self.display.notice,
+            "no_overwrite": True,
         }
 
     def verify_fingerprint(self, candidate: Any) -> bool:
@@ -624,6 +697,8 @@ def validate_mutation_grant(
 __all__ = [
     "APPROVAL_CONTEXT_VERSION",
     "MAX_APPROVAL_CONTEXT_BYTES",
+    "MAX_APPROVAL_DISPLAY_NOTICE_CHARS",
+    "MAX_APPROVAL_DISPLAY_PREVIEW_CHARS",
     "MAX_APPROVAL_DISPLAY_SUMMARY_CHARS",
     "MAX_APPROVAL_DISPLAY_TITLE_CHARS",
     "ApprovalContext",

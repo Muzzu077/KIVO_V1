@@ -8,9 +8,19 @@ file:
     {
       "version": 1,
       "workspaces": {
-        "my-project": "/absolute/path/to/my-project"
+        "my-project": "/absolute/path/to/my-project",
+        "my-notes": {
+          "root": "/absolute/path/to/my-notes",
+          "mutation_enabled": true
+        }
       }
     }
+
+A plain string workspace entry is always read-only.  Mutation is enabled only
+when the user explicitly adds ``"mutation_enabled": true`` to an object entry;
+omitting the field, setting it to ``false``, or retaining a legacy string entry
+never grants creation access.  There is no IPC or model-facing operation that
+can change this configuration.
 
 ``KIVO_WORKSPACES_CONFIG`` may point at a different file for tests or for a
 user-managed configuration. The file itself is not a secret, but it is never
@@ -72,13 +82,31 @@ class WorkspaceConfigError(Exception):
 
 @dataclass(frozen=True)
 class WorkspaceRoot:
-    """One explicitly approved workspace directory."""
+    """One explicitly approved workspace directory.
+
+    ``mutation_enabled`` is false for every legacy string entry and for object
+    entries that do not contain an explicit ``"mutation_enabled": true``.  It
+    is a user permission, never a model- or tool-supplied flag.
+    """
 
     id: str
     path: Path
+    mutation_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mutation_enabled, bool):
+            raise WorkspaceConfigError(
+                f"Workspace '{self.id}' mutation permission must be a boolean."
+            )
 
     @classmethod
-    def from_path(cls, workspace_id: str, raw_path: str | Path) -> "WorkspaceRoot":
+    def from_path(
+        cls,
+        workspace_id: str,
+        raw_path: str | Path,
+        *,
+        mutation_enabled: bool = False,
+    ) -> "WorkspaceRoot":
         """Validate and canonicalize one configured root."""
         if not isinstance(workspace_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(
             workspace_id
@@ -152,7 +180,11 @@ class WorkspaceRoot:
                 f"Workspace '{workspace_id}' is inside a protected KIVO configuration location."
             )
 
-        return cls(id=workspace_id, path=resolved)
+        return cls(
+            id=workspace_id,
+            path=resolved,
+            mutation_enabled=bool(mutation_enabled),
+        )
 
 
 @dataclass(frozen=True)
@@ -170,6 +202,14 @@ class WorkspaceConfig:
 
     def ids(self) -> tuple[str, ...]:
         return tuple(sorted(self.roots))
+
+    def mutation_workspace_ids(self) -> frozenset[str]:
+        """Return only workspaces the user explicitly opted in to mutation."""
+        return frozenset(
+            workspace_id
+            for workspace_id, root in self.roots.items()
+            if root.mutation_enabled
+        )
 
 
 def default_config_path() -> Path:
@@ -292,6 +332,49 @@ def _open_config_file(path: Path) -> Optional[int]:
         _close(cur_fd)
 
 
+def _parse_workspace_root(workspace_id: str, raw: Any) -> WorkspaceRoot:
+    """Parse one workspace entry.
+
+    Legacy string entries remain supported and are always read-only.  An
+    object entry must contain exactly ``root`` and optionally
+    ``mutation_enabled``; any other field is rejected rather than ignored.
+    """
+    if isinstance(raw, str):
+        return WorkspaceRoot.from_path(
+            workspace_id, raw, mutation_enabled=False
+        )
+    if not isinstance(raw, dict):
+        raise WorkspaceConfigError(
+            f"Workspace '{workspace_id}' must be a path string or an object "
+            "with a 'root' path."
+        )
+
+    allowed = {"root", "mutation_enabled"}
+    unknown = set(raw) - allowed
+    if unknown:
+        raise WorkspaceConfigError(
+            f"Workspace '{workspace_id}' has unknown configuration fields: "
+            + ", ".join(sorted(str(field) for field in unknown))
+        )
+    if "root" not in raw:
+        raise WorkspaceConfigError(
+            f"Workspace '{workspace_id}' is missing its 'root' path."
+        )
+    root = raw["root"]
+    if not isinstance(root, str):
+        raise WorkspaceConfigError(
+            f"Workspace '{workspace_id}' root must be a string path."
+        )
+    mutation_enabled = raw.get("mutation_enabled", False)
+    if not isinstance(mutation_enabled, bool):
+        raise WorkspaceConfigError(
+            f"Workspace '{workspace_id}' mutation_enabled must be a boolean."
+        )
+    return WorkspaceRoot.from_path(
+        workspace_id, root, mutation_enabled=mutation_enabled
+    )
+
+
 def load_workspace_config(config_path: Optional[Path] = None) -> WorkspaceConfig:
     """Load and validate the approved-root configuration.
 
@@ -373,11 +456,7 @@ def load_workspace_config(config_path: Optional[Path] = None) -> WorkspaceConfig
         if folded in folded_ids:
             raise WorkspaceConfigError("Workspace identifiers must be unique.")
         folded_ids.add(folded)
-        if not isinstance(raw_path, str):
-            raise WorkspaceConfigError(
-                f"Workspace '{workspace_id}' root must be a string path."
-            )
-        roots[workspace_id] = WorkspaceRoot.from_path(workspace_id, raw_path)
+        roots[workspace_id] = _parse_workspace_root(workspace_id, raw_path)
 
     return WorkspaceConfig(roots=MappingProxyType(roots))
 

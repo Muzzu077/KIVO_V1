@@ -1,0 +1,20 @@
+{
+  "_description": "Stage 13.3.3.4 deterministic kivo-download://v1 handoff vector",
+  "_version": "1",
+  "_note": "Synthetic metadata only; the ticket is opaque and grants nothing without the paired session",
+  "scheme": "kivo-download",
+  "protocol_version": "v1",
+  "ticket_id": "tkt_abababababababababababababababababababababababababababababababab",
+  "device_id": "client_download_test",
+  "filename": "quarterly report & notes.pdf",
+  "size": 3145745,
+  "sha256": "fe2aaf82bfa2ffec207a0c6fa7ce7d4af268d67e2672fdaec675f3f9b65d0854",
+  "params": {
+    "ticket": "tkt_abababababababababababababababababababababababababababababababab",
+    "device": "client_download_test",
+    "name": "quarterly%20report%20%26%20notes.pdf",
+    "size": "3145745",
+    "sha256": "fe2aaf82bfa2ffec207a0c6fa7ce7d4af268d67e2672fdaec675f3f9b65d0854"
+  },
+  "payload": "kivo-download://v1?ticket=tkt_abababababababababababababababababababababababababababababababab&device=client_download_test&name=quarterly%20report%20%26%20notes.pdf&size=3145745&sha256=fe2aaf82bfa2ffec207a0c6fa7ce7d4af268d67e2672fdaec675f3f9b65d0854"
+}

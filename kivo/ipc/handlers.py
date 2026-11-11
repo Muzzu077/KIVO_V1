@@ -25,6 +25,12 @@ class IPCHandlers:
         audio_ingress=None,
         transcription_manager=None,
         conversation_manager=None,
+        media_service=None,
+        telemetry_service=None,
+        microphone_service=None,
+        clipboard_service=None,
+        shelf_service=None,
+        bridge_service=None,
     ):
         self._state = state
         self._drive = drive
@@ -34,6 +40,12 @@ class IPCHandlers:
         self._audio_ingress = audio_ingress
         self._stt = transcription_manager
         self._conv = conversation_manager
+        self._media = media_service
+        self._telemetry = telemetry_service
+        self._microphone = microphone_service
+        self._clipboard = clipboard_service
+        self._shelf = shelf_service
+        self._bridge = bridge_service
 
     def get_status(self) -> dict:
         snapshot = self._state.snapshot()
@@ -58,6 +70,8 @@ class IPCHandlers:
             status_dict["stt"] = self.stt_get_status()
         if self._conv is not None:
             status_dict["conversation"] = self.conversation_get_status()
+        if self._media is not None:
+            status_dict["media"] = self.media_get_status()
         return status_dict
 
     def get_current_task(self) -> dict:
@@ -80,6 +94,8 @@ class IPCHandlers:
         if self._conv is not None:
             data["conversation"] = self.conversation_get_status()
             data["conversation_history"] = self.conversation_get_history({"limit": 20}).get("history", [])
+        if self._media is not None:
+            data["media"] = self.media_get_status()
         return data
 
     def cancel_active_task(self) -> dict:
@@ -352,6 +368,283 @@ class IPCHandlers:
             return {"ok": True, "pending": []}
         pending = self._conv.get_pending_approvals()
         return {"ok": True, "pending": pending}
+
+    # ── MPRIS media operations ─────────────────────────────────────────────
+
+    def media_get_status(self, params: dict | None = None) -> dict:
+        if self._media is None:
+            return {
+                "available": False,
+                "player_name": "",
+                "players": [],
+                "status": "Unavailable",
+                "title": "",
+                "artist": "",
+                "album": "",
+                "art_url": "",
+                "position_seconds": 0.0,
+                "duration_seconds": 0.0,
+                "can_seek": False,
+                "can_play_pause": False,
+                "can_go_next": False,
+                "can_go_previous": False,
+                "lyrics_available": False,
+            }
+        return self._media.get_status_dict()
+
+    def media_play(self, params: dict | None = None) -> dict:
+        if self._media is None:
+            return {"ok": False, "error": "Media subsystem is not initialized"}
+        return self._media.play_sync()
+
+    def media_pause(self, params: dict | None = None) -> dict:
+        if self._media is None:
+            return {"ok": False, "error": "Media subsystem is not initialized"}
+        return self._media.pause_sync()
+
+    def media_play_pause(self, params: dict | None = None) -> dict:
+        if self._media is None:
+            return {"ok": False, "error": "Media subsystem is not initialized"}
+        return self._media.play_pause_sync()
+
+    def media_next(self, params: dict | None = None) -> dict:
+        if self._media is None:
+            return {"ok": False, "error": "Media subsystem is not initialized"}
+        return self._media.next_sync()
+
+    def media_previous(self, params: dict | None = None) -> dict:
+        if self._media is None:
+            return {"ok": False, "error": "Media subsystem is not initialized"}
+        return self._media.previous_sync()
+
+    def media_seek(self, params: dict | None = None) -> dict:
+        if self._media is None:
+            return {"ok": False, "error": "Media subsystem is not initialized"}
+        if not params or not isinstance(params, dict):
+            return {"ok": False, "error": "Missing parameters"}
+        pos = params.get("position_seconds")
+        try:
+            return self._media.seek_sync(float(pos))
+        except (ValueError, TypeError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def media_get_lyrics(self, params: dict | None = None) -> dict:
+        if self._media is None:
+            return {"track": "", "artist": "", "synced": False, "lines": []}
+        return self._media.get_lyrics_dict()
+
+    # ── Telemetry operations ───────────────────────────────────────────────
+
+    def telemetry_get_snapshot(self, params: dict | None = None) -> dict:
+        if self._telemetry is None:
+            from kivo.telemetry.models import TelemetrySnapshot
+            return TelemetrySnapshot.unavailable(reason="service_unavailable").to_dict()
+        return self._telemetry.latest_snapshot().to_dict()
+
+    # ── Microphone operations ──────────────────────────────────────────────
+
+    def mic_get_state(self, params: dict | None = None) -> dict:
+        if self._microphone is None:
+            from kivo.microphone.models import MicState
+            return MicState.unavailable(
+                error_code="service_unavailable",
+                error_message="Microphone service is not initialized",
+            ).to_dict()
+        return self._microphone.get_state().to_dict()
+
+    def mic_set_mute(self, params: dict | None = None) -> dict:
+        if self._microphone is None:
+            from kivo.microphone.models import MicResult, MicState
+            st = MicState.unavailable(
+                error_code="service_unavailable",
+                error_message="Microphone service is not initialized",
+            )
+            return MicResult(
+                ok=False,
+                requested_muted=bool(params.get("muted") if isinstance(params, dict) else False),
+                changed=False,
+                default_source_changed=False,
+                duration_ms=0,
+                state=st,
+                error_code="service_unavailable",
+                error_message="Microphone service is not initialized",
+            ).to_dict()
+        muted = params["muted"] if isinstance(params, dict) and "muted" in params else False
+        return self._microphone.set_mute(muted).to_dict()
+
+    # ── Clipboard operations ───────────────────────────────────────────────
+
+    def clip_get_history(self, params: dict | None = None) -> dict:
+        if self._clipboard is None:
+            return {"items": [], "total_count": 0}
+        limit = int(params.get("limit", 50)) if params else 50
+        search = str(params.get("search", "")) if params else ""
+        ftype = str(params.get("filter", "all")) if params else "all"
+        items = self._clipboard.get_history(limit=limit, search=search, filter_type=ftype)
+        return {"items": [it.to_dict() for it in items], "total_count": len(items)}
+
+    def clip_get_item(self, params: dict | None = None) -> dict:
+        if self._clipboard is None or not params or "id" not in params:
+            return {"ok": False, "item": None}
+        detail = self._clipboard.get_item(params["id"])
+        return {"ok": detail is not None, "item": detail.to_dict() if detail else None}
+
+    def clip_copy_item(self, params: dict | None = None) -> dict:
+        if self._clipboard is None or not params or "id" not in params:
+            return {"ok": False}
+        ok = self._clipboard.copy_item(params["id"])
+        return {"ok": ok}
+
+    def clip_pin_item(self, params: dict | None = None) -> dict:
+        if self._clipboard is None or not params or "id" not in params:
+            return {"ok": False}
+        pin = bool(params.get("pin", True))
+        try:
+            ok = self._clipboard.pin_item(params["id"], pin=pin)
+            return {"ok": ok}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def clip_delete_item(self, params: dict | None = None) -> dict:
+        if self._clipboard is None or not params or "id" not in params:
+            return {"ok": False}
+        ok = self._clipboard.delete_item(params["id"])
+        return {"ok": ok}
+
+    def clip_clear_history(self, params: dict | None = None) -> dict:
+        if self._clipboard is None:
+            return {"ok": False}
+        ok = self._clipboard.clear_history()
+        return {"ok": ok}
+
+    # ── File Shelf operations ──────────────────────────────────────────────
+
+    def shelf_list_items(self, params: dict | None = None) -> dict:
+        if self._shelf is None:
+            return {"items": []}
+        return {"items": [it.to_dict() for it in self._shelf.list_items()]}
+
+    def shelf_add_uris(self, params: dict | None = None) -> dict:
+        if self._shelf is None or not params or "uris" not in params:
+            return {"added": [], "rejected": []}
+        added, rejected = self._shelf.add_items(params["uris"])
+        return {
+            "added": [it.to_dict() for it in added],
+            "rejected": rejected,
+        }
+
+    def shelf_remove_item(self, params: dict | None = None) -> dict:
+        if self._shelf is None or not params or "id" not in params:
+            return {"ok": False}
+        ok = self._shelf.remove_item(params["id"])
+        return {"ok": ok}
+
+    def shelf_clear(self, params: dict | None = None) -> dict:
+        if self._shelf is None:
+            return {"ok": False}
+        ok = self._shelf.clear()
+        return {"ok": ok}
+
+    def shelf_open_item(self, params: dict | None = None) -> dict:
+        if self._shelf is None or not params or "id" not in params:
+            return {
+                "ok": False,
+                "error_code": "service_unavailable",
+                "error_message": "File Shelf service is unavailable",
+            }
+        ok, code, msg = self._shelf.open_item(params["id"])
+        return {"ok": ok, "error_code": code, "error_message": msg}
+
+    # ── Phone Bridge operations ────────────────────────────────────────────
+
+    def bridge_start(self, params: dict | None = None) -> dict:
+        if self._bridge is None:
+            return {"ok": False, "error": "Phone Bridge service is unavailable"}
+        port = int(params.get("port", 8443)) if params and "port" in params else 8443
+        return self._bridge.start_bridge(preferred_port=port)
+
+    def bridge_stop(self, params: dict | None = None) -> dict:
+        if self._bridge is None:
+            return {"ok": False}
+        ok = self._bridge.stop_bridge()
+        return {"ok": ok}
+
+    def bridge_get_status(self, params: dict | None = None) -> dict:
+        if self._bridge is None:
+            from kivo.bridge.models import BridgeStatus
+            return BridgeStatus().to_dict()
+        return self._bridge.get_status().to_dict()
+
+    def bridge_approve_pairing(self, params: dict | None = None) -> dict:
+        if self._bridge is None or not params:
+            return {"ok": False}
+        sess_id = str(params.get("session_id") or params.get("device_id") or "")
+        if not sess_id:
+            return {"ok": False}
+        ok = self._bridge.approve_pairing(sess_id)
+        return {"ok": ok}
+
+    def bridge_reject_pairing(self, params: dict | None = None) -> dict:
+        if self._bridge is None or not params:
+            return {"ok": False}
+        sess_id = str(params.get("session_id") or params.get("device_id") or "")
+        if not sess_id:
+            return {"ok": False}
+        ok = self._bridge.reject_pairing(sess_id)
+        return {"ok": ok}
+
+    def bridge_revoke_device(self, params: dict | None = None) -> dict:
+        if self._bridge is None or not params:
+            return {"ok": False}
+        sess_id = str(params.get("session_id") or params.get("device_id") or "")
+        if not sess_id:
+            return {"ok": False}
+        ok = self._bridge.revoke_device(sess_id)
+        return {"ok": ok}
+
+    def bridge_get_transfers(self, params: dict | None = None) -> dict:
+        if self._bridge is None:
+            return {"ok": False, "transfers": []}
+        return self._bridge.get_transfers()
+
+    def bridge_resolve_transfer(self, params: dict | None = None) -> dict:
+        if self._bridge is None or not params:
+            return {"ok": False, "error_code": "service_unavailable"}
+        transfer_id = params.get("transfer_id")
+        decision = params.get("decision")
+        if not isinstance(transfer_id, str) or not isinstance(decision, str):
+            return {"ok": False, "error_code": "invalid_params"}
+        return self._bridge.resolve_transfer(transfer_id, decision)
+
+    def bridge_cancel_transfer(self, params: dict | None = None) -> dict:
+        if self._bridge is None or not params:
+            return {"ok": False, "error_code": "service_unavailable"}
+        transfer_id = params.get("transfer_id")
+        if not isinstance(transfer_id, str):
+            return {"ok": False, "error_code": "invalid_params"}
+        return self._bridge.cancel_transfer(transfer_id)
+
+    def bridge_create_download_ticket(self, params: dict | None = None) -> dict:
+        if self._bridge is None:
+            return {"ok": False, "error_code": "service_unavailable"}
+        if not params:
+            return {"ok": False, "error_code": "invalid_params"}
+        return self._bridge.create_download_ticket(
+            params.get("item_id"), params.get("authorize")
+        )
+
+    def bridge_get_downloads(self, params: dict | None = None) -> dict:
+        if self._bridge is None:
+            return {"ok": False, "downloads": [], "error_code": "service_unavailable"}
+        return self._bridge.get_downloads()
+
+    def bridge_cancel_download(self, params: dict | None = None) -> dict:
+        if self._bridge is None or not params:
+            return {"ok": False, "error_code": "service_unavailable"}
+        download_id = params.get("download_id")
+        if not isinstance(download_id, str):
+            return {"ok": False, "error_code": "invalid_params"}
+        return self._bridge.cancel_download(download_id)
 
     def _drive_snapshot(self) -> dict:
         state = self._drive.snapshot()

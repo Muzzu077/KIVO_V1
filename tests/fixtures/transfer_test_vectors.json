@@ -1,0 +1,210 @@
+{
+  "_description": "Stage 13.3.3.1 deterministic transfer protocol test vectors",
+  "_version": "1",
+  "_note": "K_up authenticates Android-to-desktop requests; K_down authenticates desktop-to-Android responses",
+  "session_id": "sess_0123456789abcdef",
+  "device_name": "Pixel 8 Pro",
+  "client_id": "client_test_device_1",
+  "upstream_key_hex": "a5050108248329e29e71564ed8bdea9ceaa0148cf3893d4150ecd7172715dc5b",
+  "downstream_key_hex": "4a34cf264a911423387b284793fb6bab2ab1bd53df4c948ac957095cc683f8bf",
+  "bearer_token": "sess_tok_buOWe22qTLQBHoVVlO-wrgLelKcUAzZL5FWjicDCdTk",
+  "transfer_protocol_version": "1",
+  "upload_init": {
+    "method": "POST",
+    "endpoint": "/api/v1/transfers/uploads/init",
+    "sequence": 1,
+    "nonce_hex": "101112131415161718191a1b1c1d1e1f",
+    "nonce_b64": "EBESExQVFhcYGRobHB0eHw",
+    "timestamp": 1700000000.0,
+    "content_length": 87,
+    "content_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "filename": "report.pdf",
+    "size": 2097152,
+    "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
+    "mime": "application/pdf",
+    "canonical_request_hex": "000000013100000015736573735f3031323334353637383961626364656600000004504f53540000001e2f6170692f76312f7472616e73666572732f75706c6f6164732f696e6974000000000000000100000010101112131415161718191a1b1c1d1e1f41d954fc40000000000000000000005700000020e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "signature_hex": "e9f798f987181f6720131ca63db861c020da518fd957783adba5264a6f7df9ba"
+  },
+  "upload_chunk": {
+    "method": "PUT",
+    "endpoint": "/api/v1/transfers/uploads/tr_aabbccddee112233aabbccdd/chunks/0",
+    "transfer_id": "tr_aabbccddee112233aabbccdd",
+    "chunk_index": 0,
+    "sequence": 2,
+    "nonce_hex": "202122232425262728292a2b2c2d2e2f",
+    "nonce_b64": "ICEiIyQlJicYKSorLC0uLw",
+    "timestamp": 1700000001.0,
+    "content_length": 1048576,
+    "content_sha256_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "canonical_request_hex": "000000013100000015736573735f30313233343536373839616263646566000000035055540000003e2f6170692f76312f7472616e73666572732f75706c6f6164732f74725f6161626263636464656531313232333361616262636364642f6368756e6b732f30000000000000000200000010202122232425262728292a2b2c2d2e2f41d954fc404000000000000000100000000000200000000000000000000000000000000000000000000000000000000000000000",
+    "signature_hex": "2d135f3327b2306f5eab2f8eb120f682feca12d839990b8a7fb4485ff890dc73"
+  },
+  "upload_status": {
+    "method": "GET",
+    "endpoint": "/api/v1/transfers/uploads/tr_aabbccddee112233aabbccdd",
+    "sequence": 3,
+    "nonce_hex": "303132333435363738393a3b3c3d3e3f",
+    "nonce_b64": "MDEyMzQ1Njc4OTo7PD0-Pw",
+    "timestamp": 1700000002.0,
+    "content_length": 0,
+    "content_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "canonical_request_hex": "000000013100000015736573735f3031323334353637383961626364656600000003474554000000352f6170692f76312f7472616e73666572732f75706c6f6164732f74725f616162626363646465653131323233336161626263636464000000000000000300000010303132333435363738393a3b3c3d3e3f41d954fc40800000000000000000000000000020e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "signature_hex": "83b8ce04b8f32a76a6c2031dc4fa041b37629b4ceba3c846df1c1b7910e7bc47"
+  },
+  "upload_cancel": {
+    "method": "POST",
+    "endpoint": "/api/v1/transfers/uploads/tr_aabbccddee112233aabbccdd/cancel",
+    "sequence": 4,
+    "nonce_hex": "404142434445464748494a4b4c4d4e4f",
+    "nonce_b64": "QEFCQ0RFRkdISUpLTE1OTw",
+    "timestamp": 1700000003.0,
+    "content_length": 0,
+    "content_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "canonical_request_hex": "000000013100000015736573735f3031323334353637383961626364656600000004504f53540000003c2f6170692f76312f7472616e73666572732f75706c6f6164732f74725f6161626263636464656531313232333361616262636364642f63616e63656c000000000000000400000010404142434445464748494a4b4c4d4e4f41d954fc40c00000000000000000000000000020e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "signature_hex": "960ac0d6a7ed4f98281ebbb8fbfda143b27ca9d40d0df8146f41eac56540c832"
+  },
+  "response": {
+    "response_context": "upload_init",
+    "http_status": 202,
+    "state": "awaiting_desktop_approval",
+    "transfer_id": "tr_aabbccddee112233aabbccdd",
+    "payload_length": 10,
+    "payload_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "validation": {
+    "valid_filenames": [
+      "report.pdf",
+      "photo 2024.jpg",
+      "résumé.docx",
+      "日本語ファイル.txt",
+      "a",
+      "file.tar.gz"
+    ],
+    "invalid_filenames": [
+      "",
+      "../etc/passwd",
+      "file/name.txt",
+      "file\\name.txt",
+      "file\u0000name.txt",
+      "..",
+      ".",
+      " leading.txt",
+      "trailing.txt ",
+      "a_very_long_filename_that_exceeds_the_128_character_limit_and_should_be_rejected_by_the_validation_logic_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf"
+    ],
+    "max_file_size": 2147483648,
+    "max_chunk_bytes": 1048576,
+    "max_concurrent_transfers": 2,
+    "max_aggregate_reserved_bytes": 2147483648
+  },
+  "lifecycle_states": {
+    "normal": [
+      "created",
+      "awaiting_desktop_approval",
+      "receiving",
+      "verifying",
+      "awaiting_final_acceptance",
+      "committed"
+    ],
+    "terminal": [
+      "committed",
+      "rejected",
+      "cancelled",
+      "expired",
+      "failed",
+      "discarded"
+    ],
+    "decisions": {
+      "allow_receive": "awaiting_desktop_approval -> receiving",
+      "reject_receive": "awaiting_desktop_approval -> rejected",
+      "accept_file": "awaiting_final_acceptance -> committed",
+      "discard_file": "awaiting_final_acceptance -> discarded"
+    }
+  },
+  "quarantine": {
+    "tier_runtime_max_bytes": 52428800,
+    "tier_cache_max_bytes": 2147483648,
+    "tmpfs_safety_margin_bytes": 134217728,
+    "disk_safety_margin_bytes": 1073741824,
+    "file_prefix": "quarantine_",
+    "file_suffix": ".part",
+    "file_mode": "0600",
+    "directory_mode": "0700"
+  },
+  "android_contract": {
+    "request_headers": {
+      "Authorization": "Bearer <session_bearer_token>",
+      "X-Kivo-Protocol": "1",
+      "X-Kivo-Session": "<session_id>",
+      "X-Kivo-Sequence": "<monotonic integer, starting at 1>",
+      "X-Kivo-Nonce": "<16 bytes, unpadded base64url>",
+      "X-Kivo-Timestamp": "<Unix epoch float, ±60s freshness>",
+      "X-Kivo-Content-SHA256": "<SHA-256 of request body, 64 hex chars>",
+      "X-Kivo-Signature": "<HMAC-SHA256 of canonical request with K_up, 64 hex chars>",
+      "Content-Length": "<exact byte count of request body>"
+    },
+    "response_fields": {
+      "ok": "boolean",
+      "v": "protocol version string",
+      "ctx": "response context (upload_init | upload_status | upload_chunk | upload_cancel)",
+      "sid": "session_id",
+      "seq": "echoed request sequence",
+      "nonce_b64": "echoed request nonce",
+      "http_status": "integer HTTP status code",
+      "state": "transfer state string",
+      "tid": "transfer_id",
+      "payload_b64": "base64-encoded JSON payload",
+      "payload_sha256": "SHA-256 of the raw payload bytes",
+      "sig": "HMAC-SHA256 of canonical response with K_down"
+    },
+    "endpoints": {
+      "init": "POST /api/v1/transfers/uploads/init",
+      "status": "GET /api/v1/transfers/uploads/{transfer_id}",
+      "chunk": "PUT /api/v1/transfers/uploads/{transfer_id}/chunks/{chunk_index}",
+      "cancel": "POST /api/v1/transfers/uploads/{transfer_id}/cancel"
+    },
+    "pairing_recovery_note": "Stage 13.3.3.2 must implement the polling recovery sequence before exposing file transfer: derive K_poll, K_up, K_down from the consumed handshake material; use fresh sequence/nonce/timestamp for each signed request; verify V2 response MAC before trusting credentials; never replay the original handshake request."
+  },
+  "exact_upload_init": {
+    "method": "POST",
+    "endpoint": "/api/v1/transfers/uploads/init",
+    "sequence": 10,
+    "nonce_hex": "505152535455565758595a5b5c5d5e5f",
+    "nonce_b64": "UFFSU1RVVldYWVpbXF1eXw",
+    "timestamp": 1700000100.0,
+    "body_utf8": "{\"filename\":\"report.pdf\",\"mime\":\"application/pdf\",\"sha256\":\"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\"size\":2097152}",
+    "content_length": 141,
+    "content_sha256_hex": "15f9dd5c75ebc3143043ef07f966a144c2b4596f90c19839b55b698d383c0142",
+    "canonical_request_hex": "000000013100000015736573735f3031323334353637383961626364656600000004504f53540000001e2f6170692f76312f7472616e73666572732f75706c6f6164732f696e6974000000000000000a00000010505152535455565758595a5b5c5d5e5f41d954fc59000000000000000000008d0000002015f9dd5c75ebc3143043ef07f966a144c2b4596f90c19839b55b698d383c0142",
+    "signature_hex": "f5351bea3dad1189ef61cacd2998195ece83acf0fa01be6c391f1c7c65538815"
+  },
+  "exact_upload_chunk": {
+    "method": "PUT",
+    "endpoint": "/api/v1/transfers/uploads/tr_aabbccddee112233aabbccdd/chunks/0",
+    "transfer_id": "tr_aabbccddee112233aabbccdd",
+    "chunk_index": 0,
+    "sequence": 11,
+    "nonce_hex": "606162636465666768696a6b6c6d6e6f",
+    "nonce_b64": "YGFiY2RlZmdoaWprbG1ubw",
+    "timestamp": 1700000101.25,
+    "body_b64": "S0lWTyBTdGFnZSAxMy4zLjMuMiBleGFjdCBjaHVuawABAgMEBQ==",
+    "content_length": 37,
+    "content_sha256_hex": "bcd74cb6f93bb93a89738555320ce9645d203a93ea87b100b7fc3f7de7f07d5b",
+    "canonical_request_hex": "000000013100000015736573735f30313233343536373839616263646566000000035055540000003e2f6170692f76312f7472616e73666572732f75706c6f6164732f74725f6161626263636464656531313232333361616262636364642f6368756e6b732f30000000000000000b00000010606162636465666768696a6b6c6d6e6f41d954fc59500000000000000000002500000020bcd74cb6f93bb93a89738555320ce9645d203a93ea87b100b7fc3f7de7f07d5b",
+    "signature_hex": "5a3b2895f7ef279529b9bb556138786fe91ef82550835c7e2c2ef5fd0e18b9d4"
+  },
+  "exact_response": {
+    "response_context": "upload_init",
+    "http_status": 202,
+    "sequence": 10,
+    "nonce_hex": "505152535455565758595a5b5c5d5e5f",
+    "state": "awaiting_desktop_approval",
+    "transfer_id": "tr_aabbccddee112233aabbccdd",
+    "payload_utf8": "{\"chunk_size\":1048576,\"created_at\":1700000100.0,\"device_name\":\"Pixel 8 Pro\",\"error_code\":null,\"expires_at\":1700000160.0,\"filename\":\"report.pdf\",\"mime\":\"application/pdf\",\"next_chunk_index\":0,\"progress_percent\":0,\"published_filename\":null,\"received_bytes\":0,\"sha256\":\"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\"size\":2097152,\"state\":\"awaiting_desktop_approval\",\"transfer_id\":\"tr_aabbccddee112233aabbccdd\",\"updated_at\":1700000100.0}",
+    "payload_b64": "eyJjaHVua19zaXplIjoxMDQ4NTc2LCJjcmVhdGVkX2F0IjoxNzAwMDAwMTAwLjAsImRldmljZV9uYW1lIjoiUGl4ZWwgOCBQcm8iLCJlcnJvcl9jb2RlIjpudWxsLCJleHBpcmVzX2F0IjoxNzAwMDAwMTYwLjAsImZpbGVuYW1lIjoicmVwb3J0LnBkZiIsIm1pbWUiOiJhcHBsaWNhdGlvbi9wZGYiLCJuZXh0X2NodW5rX2luZGV4IjowLCJwcm9ncmVzc19wZXJjZW50IjowLCJwdWJsaXNoZWRfZmlsZW5hbWUiOm51bGwsInJlY2VpdmVkX2J5dGVzIjowLCJzaGEyNTYiOiJhNTkxYTZkNDBiZjQyMDQwNGEwMTE3MzNjZmI3YjE5MGQ2MmM2NWJmMGJjZGEzMmI1N2IyNzdkOWFkOWYxNDZlIiwic2l6ZSI6MjA5NzE1Miwic3RhdGUiOiJhd2FpdGluZ19kZXNrdG9wX2FwcHJvdmFsIiwidHJhbnNmZXJfaWQiOiJ0cl9hYWJiY2NkZGVlMTEyMjMzYWFiYmNjZGQiLCJ1cGRhdGVkX2F0IjoxNzAwMDAwMTAwLjB9",
+    "payload_length": 453,
+    "payload_sha256_hex": "1de5432e71a07c7a5eb34fbd7caace16f4a581b1b543fdc21a21d3969789f83f",
+    "canonical_response_hex": "00000001310000000b75706c6f61645f696e697400000015736573735f3031323334353637383961626364656600ca000000000000000a00000010505152535455565758595a5b5c5d5e5f000000196177616974696e675f6465736b746f705f617070726f76616c0000001b74725f61616262636364646565313132323333616162626363646400000000000001c5000000201de5432e71a07c7a5eb34fbd7caace16f4a581b1b543fdc21a21d3969789f83f",
+    "signature_hex": "f9e55f876e2ead7b6ef1fe3dca8d0770eb89a4f0c37dbbd557d0db423bb93661"
+  }
+}

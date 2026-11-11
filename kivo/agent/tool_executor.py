@@ -10,6 +10,11 @@ future filesystem mutation it additionally:
 * creates an approval-bound ``ExecutionGrant``;
 * records a metadata-only audit intent before invoking the handler; and
 * requires an explicit ``ok: true`` handler result.
+
+One :class:`MutationLifecycle` is created per approved operation.  It owns the
+audit trail and the authoritative committed/verified/durability flags, so a
+timeout or cancellation after installation can never be misreported as "no
+file was created".
 """
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ import asyncio
 import copy
 import inspect
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from kivo.agent import mutation_audit
 from kivo.agent.approval_context import (
@@ -32,6 +37,10 @@ from kivo.agent.authorization import (
     AuthorizationPolicy,
 )
 from kivo.agent.mutation_budget import MutationBudget
+from kivo.agent.mutation_lifecycle import (
+    MutationLifecycle,
+    MutationLifecycleRegistry,
+)
 from kivo.agent.tool_policy import (
     MAX_EXECUTION_TIMEOUT,
     ToolPolicyError,
@@ -56,6 +65,7 @@ _MUTATION_FORBIDDEN_ARGUMENTS = frozenset(
         "authorized",
         "decision",
         "execution_grant",
+        "mutation_enabled",
         "tool_call_id",
         "tool_name",
         "turn_id",
@@ -87,11 +97,35 @@ class ToolExecutor:
         approval_gate: Optional[ApprovalGate] = None,
         authorization_policy: Optional[AuthorizationPolicy] = None,
         mutation_budget: Optional[MutationBudget] = None,
+        mutation_lifecycle_registry: Optional[MutationLifecycleRegistry] = None,
+        on_late_mutation_result: Optional[Callable[[ToolResult], None]] = None,
     ):
         self._registry = registry
         self._approval_gate = approval_gate
         self._authorization_policy = authorization_policy or AuthorizationPolicy()
         self._mutation_budget = mutation_budget or MutationBudget()
+        self._mutation_lifecycles = (
+            mutation_lifecycle_registry or MutationLifecycleRegistry()
+        )
+        self._on_late_mutation_result = on_late_mutation_result
+
+    @property
+    def mutation_lifecycles(self) -> MutationLifecycleRegistry:
+        """Expose the authoritative mutation ledger for cancellation drains."""
+        return self._mutation_lifecycles
+
+    def drain_unreported_mutation_results(self, turn_id: str = "") -> list[ToolResult]:
+        """Return committed mutation results that never reached the UI.
+
+        A cancellation or shutdown can discard the handler's ``ToolResult``
+        after the file has already been installed.  The ledger still knows the
+        operation is committed, so these results must be delivered before the
+        turn is finalized.
+        """
+        results: list[ToolResult] = []
+        for snapshot in self._mutation_lifecycles.drain_unreported(turn_id):
+            results.append(snapshot.to_tool_result())
+        return results
 
     async def execute(
         self,
@@ -139,6 +173,7 @@ class ToolExecutor:
 
         mutating = bool(getattr(tool_def, "mutating", False))
         approval_context: Optional[ApprovalContext] = None
+        lifecycle: Optional[MutationLifecycle] = None
 
         # The mutation budget is claimed before any mutating-tool validation or
         # preflight. Rejected, invalid, expired, cancelled, and failed attempts
@@ -355,6 +390,13 @@ class ToolExecutor:
                         f"not bound to a conversation turn; execution refused."
                     ),
                 )
+            if mutating and approval_context is not None:
+                lifecycle = self._mutation_lifecycles.create(approval_context)
+                if self._on_late_mutation_result is not None:
+                    observer = self._on_late_mutation_result
+                    lifecycle.set_late_observer(
+                        lambda snap, obs=observer: obs(snap.to_tool_result())
+                    )
             try:
                 approval_error, grant, approval_status = await self._request_approval(
                     snapshot_call,
@@ -365,29 +407,25 @@ class ToolExecutor:
                     approval_context,
                 )
             except asyncio.CancelledError:
-                if mutating and approval_context is not None:
-                    self._mutation_outcome(
-                        approval_context,
-                        "cancelled",
-                        duration=time.monotonic() - t0,
-                    )
+                if lifecycle is not None:
+                    lifecycle.mark_approval_failed("cancelled")
                 raise
             if approval_error is not None:
-                if mutating and approval_context is not None:
-                    self._mutation_outcome(
-                        approval_context,
+                if lifecycle is not None:
+                    lifecycle.mark_approval_failed(
                         _MUTATION_APPROVAL_STATUS.get(
                             approval_status, "approval_error"
-                        ),
-                        duration=time.monotonic() - t0,
+                        )
                     )
                 return self._failure(call, t0, approval_error)
         else:
             grant = self._grant(snapshot_call, tool_def, decision, turn_id)
 
-        # A future mutation must never run without a successful intent record.
+        # A mutation must never run without a successful audit intent.  The
+        # lifecycle owns the approval and execution-start events, so exactly
+        # one of each is recorded for this operation.
         if mutating:
-            if approval_context is None:
+            if approval_context is None or lifecycle is None:
                 self._mutation_event(
                     tool_name, turn_id, call.tool_call_id, "validation_failed"
                 )
@@ -399,14 +437,8 @@ class ToolExecutor:
                         f"approval context; execution refused."
                     ),
                 )
-            try:
-                intent_recorded = mutation_audit.record_mutation_intent(
-                    approval_context,
-                    duration=time.monotonic() - t0,
-                )
-            except Exception:
-                intent_recorded = False
-            if not intent_recorded:
+            lifecycle.mark_approved()
+            if not lifecycle.start():
                 return self._failure(
                     call,
                     t0,
@@ -414,6 +446,14 @@ class ToolExecutor:
                         f"Mutation audit intent for tool '{tool_name}' could not be "
                         f"recorded; execution refused."
                     ),
+                    {
+                        "error": (
+                            f"Mutation audit intent for tool '{tool_name}' could "
+                            f"not be recorded; execution refused."
+                        ),
+                        "status": "audit_unavailable",
+                        "committed": False,
+                    },
                 )
 
         executed_ids.add(call.tool_call_id)
@@ -428,8 +468,12 @@ class ToolExecutor:
                 timeout,
                 turn_id,
                 approval_context,
+                lifecycle,
             )
             execution_time = time.monotonic() - t0
+
+            if mutating and lifecycle is not None:
+                lifecycle.complete(output)
 
             failure_message = self._handler_failure_message(
                 output,
@@ -438,11 +482,21 @@ class ToolExecutor:
             )
             if failure_message is not None:
                 if mutating:
-                    self._mutation_outcome(
-                        approval_context,
-                        "failed" if self._is_explicit_false_result(output) else "invalid_result",
-                        duration=execution_time,
+                    if lifecycle is not None and lifecycle.committed:
+                        lifecycle.mark_reported()
+                    safe_output = (
+                        dict(output) if isinstance(output, dict) else output
                     )
+                    if (
+                        lifecycle is not None
+                        and lifecycle.audit_warning
+                        and isinstance(safe_output, dict)
+                    ):
+                        safe_output.setdefault(
+                            "audit_warning",
+                            "The mutation failure could not be fully audited.",
+                        )
+                    output = safe_output
                 else:
                     self._audit(
                         tool_name,
@@ -466,21 +520,20 @@ class ToolExecutor:
                 )
 
             if mutating:
-                outcome_ok = mutation_audit.record_mutation_outcome(
-                    approval_context,
-                    "executed",
-                    duration=execution_time,
-                )
-                if not outcome_ok:
-                    # The mutation already committed. Never report it as if it
-                    # did not happen; surface the audit failure as a warning.
-                    safe_output = dict(output) if isinstance(output, dict) else output
-                    if isinstance(safe_output, dict):
-                        safe_output["audit_warning"] = (
-                            "Mutation completed, but its audit outcome could not "
-                            "be recorded."
+                if lifecycle is not None:
+                    if lifecycle.committed:
+                        lifecycle.mark_reported()
+                    if lifecycle.audit_warning:
+                        safe_output = (
+                            dict(output) if isinstance(output, dict) else output
                         )
-                    output = safe_output
+                        if isinstance(safe_output, dict):
+                            safe_output.setdefault(
+                                "audit_warning",
+                                "Mutation completed, but its audit trail is "
+                                "incomplete.",
+                            )
+                        output = safe_output
             else:
                 self._audit(
                     tool_name,
@@ -503,22 +556,98 @@ class ToolExecutor:
 
         except asyncio.TimeoutError:
             execution_time = time.monotonic() - t0
-            if mutating:
-                self._mutation_outcome(
-                    approval_context, "timed_out", duration=execution_time
-                )
-            else:
-                self._audit(
-                    tool_name,
-                    decision.action_verb or "*",
-                    decision=decision.action.value,
-                    risk=decision.risk,
-                    control=decision.control,
-                    turn_id=turn_id,
+            if mutating and lifecycle is not None:
+                lifecycle.record_timeout(committed=lifecycle.committed)
+                if lifecycle.committed:
+                    # Installation already happened.  Report the authoritative
+                    # lifecycle outcome instead of falsely claiming no file was
+                    # created.
+                    snapshot = lifecycle.snapshot()
+                    lifecycle.mark_reported()
+                    error_message = "" if snapshot.ok else (
+                        snapshot.error
+                        or "The file was committed but verification or "
+                        "durability did not complete before the timeout."
+                    )
+                    return ToolResult(
+                        tool_call_id=call.tool_call_id,
+                        tool_name=tool_name,
+                        output=snapshot.to_output(),
+                        success=snapshot.ok,
+                        execution_time=round(execution_time, 3),
+                        error_message=error_message,
+                        max_message_chars=tool_def.max_output_chars,
+                    )
+                if lifecycle.settlement_pending:
+                    # The handler returned while the background operation was
+                    # still running. Abandon settlement to arm late observer delivery
+                    # if it completes later.
+                    already_committed = lifecycle.abandon_settlement()
+                    if already_committed or lifecycle.committed:
+                        snapshot = lifecycle.snapshot()
+                        lifecycle.mark_reported()
+                        return ToolResult(
+                            tool_call_id=call.tool_call_id,
+                            tool_name=tool_name,
+                            output=snapshot.to_output(),
+                            success=snapshot.ok,
+                            execution_time=round(execution_time, 3),
+                            error_message="" if snapshot.ok else (
+                                snapshot.error or "Committed during timeout settlement."
+                            ),
+                            max_message_chars=tool_def.max_output_chars,
+                        )
+                    return ToolResult(
+                        tool_call_id=call.tool_call_id,
+                        tool_name=tool_name,
+                        output={
+                            "error": (
+                                f"Tool '{tool_name}' execution timed out after "
+                                f"{timeout}s while the filesystem operation was still running; "
+                                f"its final installation state is unknown."
+                            ),
+                            "status": "outcome_unknown",
+                            "committed": False,
+                            "outcome_unknown": True,
+                        },
+                        success=False,
+                        execution_time=round(execution_time, 3),
+                        error_message=(
+                            f"Execution timed out after {timeout}s while the "
+                            f"filesystem operation was still running; outcome is unknown."
+                        ),
+                        max_message_chars=tool_def.max_output_chars,
+                    )
+                return ToolResult(
                     tool_call_id=call.tool_call_id,
-                    outcome="timeout",
-                    result="Execution timed out",
+                    tool_name=tool_name,
+                    output={
+                        "error": (
+                            f"Tool '{tool_name}' execution timed out after "
+                            f"{timeout}s before the file was installed."
+                        ),
+                        "status": "timed_out",
+                        "committed": False,
+                    },
+                    success=False,
+                    execution_time=round(execution_time, 3),
+                    error_message=(
+                        f"Execution timed out after {timeout}s before the file "
+                        f"was installed."
+                    ),
+                    max_message_chars=tool_def.max_output_chars,
                 )
+            self._audit(
+                tool_name,
+                decision.action_verb or "*",
+                decision=decision.action.value,
+                risk=decision.risk,
+                control=decision.control,
+                turn_id=turn_id,
+                tool_call_id=call.tool_call_id,
+                outcome="timeout",
+                result="Execution timed out",
+            )
             return ToolResult(
                 tool_call_id=call.tool_call_id,
                 tool_name=tool_name,
@@ -529,18 +658,19 @@ class ToolExecutor:
                 max_message_chars=tool_def.max_output_chars,
             )
         except asyncio.CancelledError:
-            if mutating:
-                self._mutation_outcome(
-                    approval_context,
-                    "cancelled",
-                    duration=time.monotonic() - t0,
-                )
+            if mutating and lifecycle is not None:
+                # The committed flag is authoritative.  A committed result is
+                # kept unreported and drained by the conversation manager once
+                # cancellation settles; it is never described as "not created".
+                lifecycle.record_cancelled(committed=lifecycle.committed)
             raise
         except Exception as exc:
             execution_time = time.monotonic() - t0
-            if mutating:
-                self._mutation_outcome(
-                    approval_context, "failed", duration=execution_time
+            if mutating and lifecycle is not None:
+                lifecycle.record_failure(
+                    "execution_error",
+                    str(exc),
+                    committed=lifecycle.committed,
                 )
             else:
                 self._audit(
@@ -777,6 +907,7 @@ class ToolExecutor:
         timeout: float,
         turn_id: str = "",
         approval_context: Optional[ApprovalContext] = None,
+        lifecycle: Optional[MutationLifecycle] = None,
     ) -> Any:
         extra_kwargs: dict[str, Any] = {}
         try:
@@ -792,6 +923,13 @@ class ToolExecutor:
                 extra_kwargs["turn_id"] = turn_id
             if "approval_context" in signature.parameters:
                 extra_kwargs["approval_context"] = approval_context
+            if "mutation_lifecycle" in signature.parameters:
+                extra_kwargs["mutation_lifecycle"] = lifecycle
+            if "defer_lifecycle_settlement" in signature.parameters:
+                extra_kwargs["defer_lifecycle_settlement"] = (
+                    bool(getattr(tool_def, "mutating", False))
+                    and lifecycle is not None
+                )
 
         if inspect.iscoroutinefunction(tool_def.handler):
             return await asyncio.wait_for(
@@ -842,10 +980,6 @@ class ToolExecutor:
         )
 
     # ── Result handling ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_explicit_false_result(output: Any) -> bool:
-        return isinstance(output, dict) and output.get("ok") is False
 
     @classmethod
     def _handler_failure_message(
@@ -929,20 +1063,6 @@ class ToolExecutor:
             )
         except Exception:
             pass
-
-    @staticmethod
-    def _mutation_outcome(
-        context: ApprovalContext,
-        status: str,
-        *,
-        duration: float = 0.0,
-    ) -> bool:
-        try:
-            return mutation_audit.record_mutation_outcome(
-                context, status, duration=duration
-            )
-        except Exception:
-            return False
 
     # ── Helpers ────────────────────────────────────────────────────────────
 

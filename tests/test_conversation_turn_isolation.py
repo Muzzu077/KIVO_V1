@@ -20,6 +20,7 @@ class ControlledProvider(LLMProvider):
     def __init__(self) -> None:
         self.block = True
         self.started = threading.Event()
+        self.cancelled = threading.Event()
 
     async def generate(self, messages, tools=None, **kwargs):
         chunks = []
@@ -35,8 +36,12 @@ class ControlledProvider(LLMProvider):
         **kwargs,
     ) -> AsyncIterator[str]:
         self.started.set()
-        if self.block:
-            await asyncio.sleep(5.0)
+        try:
+            if self.block:
+                await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
         yield "completed response"
 
     async def get_status(self) -> ProviderStatus:
@@ -104,6 +109,19 @@ class ConversationTurnIsolationTest(unittest.TestCase):
 
         self.assertFalse(self.manager.cancel_active())
         self.assertEqual(len(cancelled), 1)
+
+    def test_close_drains_cancelled_generation_task(self):
+        self.assertTrue(self.manager.submit_text("blocked request"))
+        self.assertTrue(self.provider.started.wait(timeout=1.0))
+
+        self.manager.close()
+
+        # ``close`` must let the event loop process the cancellation before it
+        # stops; otherwise the generation task is destroyed while still
+        # pending and Python prints a teardown diagnostic.
+        self.assertTrue(self.provider.cancelled.wait(timeout=1.0))
+        self.assertFalse(self.manager._loop.is_running())
+        self.assertEqual(asyncio.all_tasks(self.manager._loop), set())
 
     def test_turn_timeout_is_explicit_and_clears_active_turn(self):
         self.manager.close()

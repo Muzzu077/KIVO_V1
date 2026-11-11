@@ -22,6 +22,8 @@ Errors are responses with ``ok`` false and an ``error`` object containing
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -81,6 +83,74 @@ REQUEST_OPERATIONS = frozenset({
     "command.resolve_approval",
     "command_get_pending_approvals",
     "command.get_pending_approvals",
+    "media_get_status",
+    "media.get_status",
+    "media_play",
+    "media.play",
+    "media_pause",
+    "media.pause",
+    "media_play_pause",
+    "media.play_pause",
+    "media_next",
+    "media.next",
+    "media_previous",
+    "media.previous",
+    "media_seek",
+    "media.seek",
+    "media_get_lyrics",
+    "media.get_lyrics",
+    "telemetry_get_snapshot",
+    "telemetry.get_snapshot",
+    "mic_get_state",
+    "mic.get_state",
+    "mic_set_mute",
+    "mic.set_mute",
+    "clip_get_history",
+    "clip.get_history",
+    "clip_get_item",
+    "clip.get_item",
+    "clip_copy_item",
+    "clip.copy_item",
+    "clip_pin_item",
+    "clip.pin_item",
+    "clip_delete_item",
+    "clip.delete_item",
+    "clip_clear_history",
+    "clip.clear_history",
+    "shelf_list_items",
+    "shelf.list_items",
+    "shelf_add_uris",
+    "shelf.add_uris",
+    "shelf_remove_item",
+    "shelf.remove_item",
+    "shelf_clear",
+    "shelf.clear",
+    "shelf_open_item",
+    "shelf.open_item",
+    "bridge_start",
+    "bridge.start",
+    "bridge_stop",
+    "bridge.stop",
+    "bridge_get_status",
+    "bridge.get_status",
+    "bridge_approve_pairing",
+    "bridge.approve_pairing",
+    "bridge_reject_pairing",
+    "bridge.reject_pairing",
+    "bridge_revoke_device",
+    "bridge.revoke_device",
+    "bridge_get_transfers",
+    "bridge.get_transfers",
+    "bridge_resolve_transfer",
+    "bridge.resolve_transfer",
+    "bridge_cancel_transfer",
+    "bridge.cancel_transfer",
+    "bridge_create_download_ticket",
+    "bridge.create_download_ticket",
+    "bridge_get_downloads",
+    "bridge.get_downloads",
+    "bridge_cancel_download",
+    "bridge.cancel_download",
 })
 
 EVENT_NAMES = (
@@ -139,6 +209,34 @@ EVENT_NAMES = (
     "command.approval_requested",
     "command_approval_resolved",
     "command.approval_resolved",
+    "media_status_changed",
+    "media.status_changed",
+    "media_lyrics_loaded",
+    "media.lyrics_loaded",
+    "telemetry_snapshot_changed",
+    "telemetry.snapshot_changed",
+    "mic_state_changed",
+    "mic.state_changed",
+    "clip_history_changed",
+    "clip.history_changed",
+    "shelf_items_changed",
+    "shelf.items_changed",
+    "bridge_status_changed",
+    "bridge.status_changed",
+    "bridge_pairing_requested",
+    "bridge.pairing_requested",
+    "bridge_transfer_requested",
+    "bridge.transfer_requested",
+    "bridge_transfer_progress",
+    "bridge.transfer_progress",
+    "bridge_transfer_completed",
+    "bridge.transfer_completed",
+    "bridge_download_requested",
+    "bridge.download_requested",
+    "bridge_download_progress",
+    "bridge.download_progress",
+    "bridge_download_completed",
+    "bridge.download_completed",
     "error",
 )
 EVENT_NAME_SET = frozenset(EVENT_NAMES)
@@ -298,6 +396,123 @@ def decode_request(body: bytes) -> Request:
             raise ProtocolError(
                 exc.code, exc.message, request_id=request_id
             ) from exc
+    elif operation in ("media_seek", "media.seek"):
+        try:
+            _validate_media_seek_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in (
+        "media_play", "media.play",
+        "media_pause", "media.pause",
+        "media_play_pause", "media.play_pause",
+        "media_get_status", "media.get_status",
+        "media_get_lyrics", "media.get_lyrics",
+    ):
+        try:
+            _validate_media_control_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("mic_set_mute", "mic.set_mute"):
+        try:
+            _validate_mic_set_mute_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("clip_get_history", "clip.get_history"):
+        try:
+            _validate_clip_get_history_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in (
+        "clip_get_item", "clip.get_item",
+        "clip_copy_item", "clip.copy_item",
+        "clip_delete_item", "clip.delete_item",
+    ):
+        try:
+            _validate_clip_item_id_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("clip_pin_item", "clip.pin_item"):
+        try:
+            _validate_clip_pin_item_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("shelf_add_uris", "shelf.add_uris"):
+        try:
+            _validate_shelf_add_uris_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in (
+        "shelf_remove_item", "shelf.remove_item",
+        "shelf_open_item", "shelf.open_item",
+    ):
+        try:
+            _validate_shelf_item_id_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("bridge_start", "bridge.start"):
+        try:
+            _validate_bridge_start_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in (
+        "bridge_approve_pairing", "bridge.approve_pairing",
+        "bridge_reject_pairing", "bridge.reject_pairing",
+        "bridge_revoke_device", "bridge.revoke_device",
+    ):
+        try:
+            _validate_bridge_session_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("bridge_resolve_transfer", "bridge.resolve_transfer"):
+        try:
+            _validate_bridge_resolve_transfer_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("bridge_cancel_transfer", "bridge.cancel_transfer"):
+        try:
+            _validate_bridge_transfer_id_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in (
+        "bridge_create_download_ticket", "bridge.create_download_ticket",
+    ):
+        try:
+            _validate_bridge_create_download_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
+    elif operation in ("bridge_cancel_download", "bridge.cancel_download"):
+        try:
+            _validate_bridge_download_id_params(params)
+        except ProtocolError as exc:
+            raise ProtocolError(
+                exc.code, exc.message, request_id=request_id
+            ) from exc
     elif params:
         raise ProtocolError(
             "invalid_params",
@@ -430,6 +645,264 @@ def _validate_command_resolve_approval_params(params: dict[str, Any]) -> None:
             raise ProtocolError(
                 "invalid_params", "tool_call_id contains control characters"
             )
+
+
+def _validate_media_seek_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"position_seconds", "player"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    pos = params.get("position_seconds")
+    valid_position = False
+    if isinstance(pos, (int, float)) and not isinstance(pos, bool):
+        try:
+            valid_position = math.isfinite(float(pos)) and pos >= 0
+        except (OverflowError, ValueError):
+            valid_position = False
+    if not valid_position:
+        raise ProtocolError(
+            "invalid_params",
+            "position_seconds must be a non-negative finite number",
+        )
+    player = params.get("player")
+    if player is not None and not isinstance(player, str):
+        raise ProtocolError("invalid_params", "player must be a string")
+
+
+def _validate_media_control_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"player"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    player = params.get("player")
+    if player is not None and not isinstance(player, str):
+        raise ProtocolError("invalid_params", "player must be a string")
+
+
+def _validate_mic_set_mute_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"muted"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "muted" not in params:
+        raise ProtocolError("invalid_params", "missing required 'muted' parameter")
+    muted = params.get("muted")
+    if type(muted) is not bool:
+        raise ProtocolError("invalid_params", "parameter 'muted' must be a boolean")
+
+
+def _validate_clip_get_history_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"limit", "search", "filter"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    limit = params.get("limit")
+    if limit is not None:
+        if type(limit) is not int or limit < 1 or limit > 100:
+            raise ProtocolError(
+                "invalid_params", "limit must be an integer between 1 and 100"
+            )
+    search = params.get("search")
+    if search is not None:
+        if not isinstance(search, str):
+            raise ProtocolError("invalid_params", "search must be a string")
+        if len(search) > 128:
+            raise ProtocolError(
+                "invalid_params", "search query exceeds 128 characters"
+            )
+    ftype = params.get("filter")
+    if ftype is not None:
+        if ftype not in ("all", "text", "image", "pinned"):
+            raise ProtocolError(
+                "invalid_params",
+                "filter must be 'all', 'text', 'image', or 'pinned'",
+            )
+
+
+def _validate_clip_item_id_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"id"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "id" not in params:
+        raise ProtocolError("invalid_params", "missing required 'id' parameter")
+    item_id = params.get("id")
+    if not isinstance(item_id, str) or not item_id.strip():
+        raise ProtocolError("invalid_params", "id must be a non-empty string")
+    if len(item_id) > 64:
+        raise ProtocolError("invalid_params", "id is too long")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", item_id):
+        raise ProtocolError("invalid_params", "id contains invalid characters")
+
+
+def _validate_clip_pin_item_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"id", "pin"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "id" not in params:
+        raise ProtocolError("invalid_params", "missing required 'id' parameter")
+    item_id = params.get("id")
+    if not isinstance(item_id, str) or not item_id.strip():
+        raise ProtocolError("invalid_params", "id must be a non-empty string")
+    if len(item_id) > 64:
+        raise ProtocolError("invalid_params", "id is too long")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", item_id):
+        raise ProtocolError("invalid_params", "id contains invalid characters")
+    pin = params.get("pin")
+    if pin is not None and type(pin) is not bool:
+        raise ProtocolError("invalid_params", "pin must be a boolean")
+
+
+def _validate_shelf_add_uris_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"uris"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "uris" not in params:
+        raise ProtocolError("invalid_params", "missing required 'uris' parameter")
+    uris = params.get("uris")
+    if not isinstance(uris, list):
+        raise ProtocolError("invalid_params", "uris must be a list of URI strings")
+    if not uris:
+        raise ProtocolError("invalid_params", "uris list must not be empty")
+    if len(uris) > 20:
+        raise ProtocolError("invalid_params", "uris list exceeds maximum batch size of 20")
+    for u in uris:
+        if not isinstance(u, str):
+            raise ProtocolError("invalid_params", "all entries in uris must be strings")
+        if len(u.encode("utf-8")) > 4096:
+            raise ProtocolError("invalid_params", "URI exceeds maximum limit of 4096 bytes")
+
+
+def _validate_shelf_item_id_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"id"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "id" not in params:
+        raise ProtocolError("invalid_params", "missing required 'id' parameter")
+    item_id = params.get("id")
+    if not isinstance(item_id, str) or not item_id.strip():
+        raise ProtocolError("invalid_params", "id must be a non-empty string")
+    if len(item_id) > 64:
+        raise ProtocolError("invalid_params", "id is too long")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", item_id):
+        raise ProtocolError("invalid_params", "id contains invalid characters")
+
+
+def _validate_bridge_start_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"port"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    port = params.get("port")
+    if port is not None:
+        if type(port) is not int or port < 1024 or port > 65535:
+            raise ProtocolError(
+                "invalid_params", "port must be an integer between 1024 and 65535"
+            )
+
+
+def _validate_bridge_session_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"session_id", "device_id"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    sess_id = params.get("session_id") or params.get("device_id")
+    if not isinstance(sess_id, str) or not sess_id.strip():
+        raise ProtocolError("invalid_params", "missing required 'session_id' parameter")
+    if len(sess_id) > 64:
+        raise ProtocolError("invalid_params", "session_id is too long")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", sess_id):
+        raise ProtocolError("invalid_params", "session_id contains invalid characters")
+
+
+def _validate_bridge_transfer_id(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"tr_[0-9a-f]{24}", value):
+        raise ProtocolError("invalid_params", "transfer_id is malformed")
+    return value
+
+
+def _validate_bridge_transfer_id_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"transfer_id"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "transfer_id" not in params:
+        raise ProtocolError("invalid_params", "missing required 'transfer_id' parameter")
+    _validate_bridge_transfer_id(params.get("transfer_id"))
+
+
+def _validate_bridge_resolve_transfer_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"transfer_id", "decision"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "transfer_id" not in params:
+        raise ProtocolError("invalid_params", "missing required 'transfer_id' parameter")
+    _validate_bridge_transfer_id(params.get("transfer_id"))
+    decision = params.get("decision")
+    if decision not in ("allow_receive", "reject_receive", "accept_file", "discard_file"):
+        raise ProtocolError(
+            "invalid_params",
+            "decision must be one of allow_receive, reject_receive, accept_file, discard_file",
+        )
+
+
+def _validate_bridge_create_download_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"item_id", "authorize"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    item_id = params.get("item_id")
+    if not isinstance(item_id, str) or not re.fullmatch(r"shelf_[0-9a-f]{12}", item_id):
+        raise ProtocolError("invalid_params", "item_id is malformed")
+    if params.get("authorize") is not True:
+        raise ProtocolError(
+            "invalid_params",
+            "explicit export authorization requires authorize=true",
+        )
+
+
+def _validate_bridge_download_id_params(params: dict[str, Any]) -> None:
+    unknown = set(params) - {"download_id"}
+    if unknown:
+        raise ProtocolError(
+            "invalid_params",
+            "unknown parameter(s): " + ", ".join(sorted(unknown)),
+        )
+    if "download_id" not in params:
+        raise ProtocolError("invalid_params", "missing required 'download_id' parameter")
+    download_id = params.get("download_id")
+    if not isinstance(download_id, str) or not re.fullmatch(r"tkt_[0-9a-f]{64}", download_id):
+        raise ProtocolError("invalid_params", "download_id is malformed")
 
 
 def _validate_subscription_params(params: dict[str, Any]) -> None:
